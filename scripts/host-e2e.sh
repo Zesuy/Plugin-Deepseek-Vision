@@ -188,6 +188,11 @@ item = items["deepseek-vision"]
 assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
+fields = {field["name"]: field["type"] for field in item["config_fields"]}
+assert len(fields) == 16, fields
+assert fields["target_models"] == "array", fields
+assert fields["vision_base_url"] == "string", fields
+assert fields["max_images_per_request"] == "integer", fields
 PY
 mgmt "$BASE/v0/management/plugins/deepseek-vision/config" >"$TMP/plugin-config.json"
 python3 - "$TMP/plugin-config.json" <<'PY'

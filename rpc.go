@@ -117,8 +117,8 @@ func configure(method string, raw []byte) error {
 	}
 	if len(strings.TrimSpace(string(req.ConfigYAML))) == 0 {
 		if method == pluginabi.MethodPluginRegister {
-			// Registration without configuration is metadata-only. The host must
-			// send an explicit reconfigure before image interception can be ready.
+			// Registration is also the management UI's metadata discovery seam. It
+			// must succeed before the host can expose ConfigFields to an operator.
 			return nil
 		}
 		return errors.New("explicit plugin configuration is required")
@@ -128,12 +128,28 @@ func configure(method string, raw []byte) error {
 	// the runtime gate is installed below.
 	cfg, err := config.ParseYAML(req.ConfigYAML)
 	if err != nil {
+		if method == pluginabi.MethodPluginRegister {
+			// Do not create a configuration bootstrap deadlock: an incomplete or
+			// invalid initial document must not prevent the management UI from
+			// discovering the fields needed to repair it. Reconfigure remains strict.
+			return nil
+		}
 		return fmt.Errorf("validate plugin configuration: %w", err)
 	}
 	if cfg == nil || strings.TrimSpace(cfg.VisionBaseURL) == "" {
+		if method == pluginabi.MethodPluginRegister {
+			if cfg != nil {
+				rememberUnavailableTargets(cfg.TargetModels)
+			}
+			return nil
+		}
 		return errors.New("vision_base_url must be explicitly configured")
 	}
 	if strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv)) == "" {
+		if method == pluginabi.MethodPluginRegister {
+			rememberUnavailableTargets(cfg.TargetModels)
+			return nil
+		}
 		return errors.New("vision API key environment variable is unavailable")
 	}
 
@@ -182,7 +198,7 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             pluginName,
 			Version:          pluginVersion,
-			Author:           "router-for-me",
+			Author:           "Zesuy",
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{

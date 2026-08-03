@@ -32,6 +32,70 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
 	}
+	if len(result.Metadata.ConfigFields) != 16 {
+		t.Fatalf("config field count = %d, want 16", len(result.Metadata.ConfigFields))
+	}
+	wantFields := map[string]pluginapi.ConfigFieldType{
+		"target_models":             pluginapi.ConfigFieldTypeArray,
+		"vision_base_url":           pluginapi.ConfigFieldTypeString,
+		"vision_model":              pluginapi.ConfigFieldTypeString,
+		"vision_api_key_env":        pluginapi.ConfigFieldTypeString,
+		"language":                  pluginapi.ConfigFieldTypeString,
+		"request_timeout_seconds":   pluginapi.ConfigFieldTypeInteger,
+		"per_call_timeout_seconds":  pluginapi.ConfigFieldTypeInteger,
+		"retry_max_attempts":        pluginapi.ConfigFieldTypeInteger,
+		"max_concurrency":           pluginapi.ConfigFieldTypeInteger,
+		"max_images_per_request":    pluginapi.ConfigFieldTypeInteger,
+		"max_request_bytes":         pluginapi.ConfigFieldTypeInteger,
+		"max_image_reference_bytes": pluginapi.ConfigFieldTypeInteger,
+		"max_response_bytes":        pluginapi.ConfigFieldTypeInteger,
+		"max_result_chars":          pluginapi.ConfigFieldTypeInteger,
+		"cache_size":                pluginapi.ConfigFieldTypeInteger,
+		"cache_ttl_seconds":         pluginapi.ConfigFieldTypeInteger,
+	}
+	for _, field := range result.Metadata.ConfigFields {
+		if field.Description == "" {
+			t.Errorf("field %q has no description", field.Name)
+		}
+		if wantType, ok := wantFields[field.Name]; ok {
+			if field.Type != wantType {
+				t.Errorf("field %q type = %q, want %q", field.Name, field.Type, wantType)
+			}
+			delete(wantFields, field.Name)
+		}
+	}
+	if len(wantFields) != 0 {
+		t.Fatalf("registration is missing representative config fields: %#v", wantFields)
+	}
+}
+
+func TestRegisterWithIncompleteConfigStillPublishesConfigFields(t *testing.T) {
+	defer shutdownPlugin()
+	request, err := json.Marshal(lifecycleRequest{
+		SchemaVersion: pluginabi.SchemaVersion,
+		ConfigYAML:    []byte("enabled: true\npriority: 100\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(pluginabi.MethodPluginRegister, request)
+	if err != nil {
+		t.Fatalf("metadata-only registration failed: %v", err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		t.Fatalf("registration envelope = %s, err=%v", raw, err)
+	}
+	var result registration
+	if err := json.Unmarshal(env.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Metadata.ConfigFields) == 0 {
+		t.Fatal("metadata-only registration did not expose ConfigFields")
+	}
+	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, request); err == nil {
+		t.Fatal("incomplete reconfigure unexpectedly succeeded")
+	}
 }
 
 func TestRegistrationUsesOverridableVersionVariable(t *testing.T) {

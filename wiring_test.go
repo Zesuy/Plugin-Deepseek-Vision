@@ -188,7 +188,7 @@ cache_ttl_seconds: 60
 	}
 }
 
-func TestWiredAfterAuthMissingTokenFailsReadinessAndTerminatesImageRequests(t *testing.T) {
+func TestWiredRegistrationWithoutTokenPublishesMetadataAndTerminatesImageRequests(t *testing.T) {
 	old, had := os.LookupEnv("WIRING_TEST_VISION_KEY")
 	_ = os.Unsetenv("WIRING_TEST_VISION_KEY")
 	defer func() {
@@ -221,8 +221,23 @@ cache_ttl_seconds: 60
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handleMethod("plugin.register", reg); err == nil {
-		t.Fatal("missing token configuration unexpectedly reported ready")
+	rawRegistration, err := handleMethod("plugin.register", reg)
+	if err != nil {
+		t.Fatalf("metadata registration failed without runtime token: %v", err)
+	}
+	var registrationEnvelope envelope
+	if err := json.Unmarshal(rawRegistration, &registrationEnvelope); err != nil || !registrationEnvelope.OK {
+		t.Fatalf("registration envelope = %s, err=%v", rawRegistration, err)
+	}
+	var registered registration
+	if err := json.Unmarshal(registrationEnvelope.Result, &registered); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered.Metadata.ConfigFields) == 0 {
+		t.Fatal("registration did not expose ConfigFields")
+	}
+	if _, err := handleMethod("plugin.reconfigure", reg); err == nil {
+		t.Fatal("missing token reconfigure unexpectedly reported ready")
 	}
 	req, err := json.Marshal(pluginapi.RequestInterceptRequest{
 		SourceFormat: "openai-response", Model: "deepseek-v4-flash",

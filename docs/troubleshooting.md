@@ -43,6 +43,33 @@ store install has multiple versions, the pinned `store.version` must match an
 existing artifact; reinstall the requested archive if the host cleaned up an
 unselected old file.
 
+## CPAMC shows no configurable fields
+
+CLIProxyAPI exposes `config_fields` only after a plugin has registered. A
+discovered but disabled or unconfigured binary can therefore show the generic
+"no declared visual configuration fields" message before its first load.
+
+For first-time CPAMC setup, enable the plugin and save once, wait until its
+status becomes `registered`, then reopen the configuration drawer. The plugin
+allows this first registration to remain metadata-only until
+`vision_base_url` and the API-key environment variable are ready; subsequent
+reconfigure operations still validate the complete configuration strictly.
+
+Verify what the host received from the plugin with:
+
+```bash
+curl -fsS -H 'Authorization: Bearer <management-key>' \
+  http://127.0.0.1:8085/v0/management/plugins \
+  | jq '.plugins[]
+      | select(.id == "deepseek-vision")
+      | {registered, effective_enabled, config_fields}'
+```
+
+A current binary reports 16 fields. If `registered` remains `false`, restart
+CLIProxyAPI after replacing the library and inspect the plugin registration
+error in the host log; an old binary or failed ABI load cannot publish field
+metadata.
+
 ## Requests pass through unexpectedly
 
 The plugin intentionally handles only `/v1/responses`, source format
