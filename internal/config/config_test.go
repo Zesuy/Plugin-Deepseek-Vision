@@ -39,14 +39,19 @@ vision_model: host-vision
 	}
 }
 
-func TestExternalBackendIsRejected(t *testing.T) {
-	for _, raw := range []string{
-		"vision_backend: external\nvision_base_url: https://vision.example/v1",
-		"vision_base_url: https://vision.example/v1",
-	} {
-		if _, err := ParseYAML([]byte(raw)); err == nil {
-			t.Fatalf("external config accepted: %s", raw)
-		}
+func TestDeprecatedExternalFieldsAreUnconditionallyIgnored(t *testing.T) {
+	cfg, err := ParseYAML([]byte(`
+vision_backend: [external, legacy]
+vision_base_url: {old: https://vision.example/v1}
+vision_api_key_env: null
+vision_model: gpt-5.6-luna
+language: zh
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VisionModel != "gpt-5.6-luna" || cfg.Language != "zh" {
+		t.Fatalf("active config = %#v", cfg)
 	}
 }
 
@@ -111,7 +116,6 @@ func TestTargetModelsAreCanonicalized(t *testing.T) {
 func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 	for _, raw := range []string{
 		"unknown_field: true",
-		"vision_backend: unknown",
 		"vision_model: ''",
 		"language: ''",
 		"request_timeout_seconds: 0",

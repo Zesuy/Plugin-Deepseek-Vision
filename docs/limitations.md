@@ -18,9 +18,10 @@
   retained historical turns and the current turn are converted together. A
   `previous_response_id` does not expose server-side history to the callback;
   images hidden behind that identifier cannot be inspected or rewritten.
-- There is one host model call per image. CLIProxyAPI owns provider concurrency.
-  The plugin does not
-  provide OCR and VLM as separate models; the configured VLM returns both
+- There is one host model call per unique image/model/language/full-prompt key.
+  Duplicate work in one request is merged and successful results may be reused
+  from a small TTL cache. CLIProxyAPI owns provider concurrency. The plugin
+  does not provide OCR and VLM as separate models; the configured VLM returns both
   visible-text transcription and visual explanation.
 - For an eligible Responses image request, malformed JSON is a 400, unsupported
   image sources are a 422, configured body/reference/image-count limits are a
@@ -33,8 +34,9 @@
 - The response stream is not modified. Preprocessing must finish before the
   host begins delivering a stream, so VLM latency contributes to first-byte
   latency.
-- The plugin intentionally does not cache model results; repeated images cause
-  repeated host model executions unless the configured provider adds caching.
+- The process-local cache holds at most 128 derived text results. Data URIs use
+  a 15-minute TTL and URLs use 2 minutes; reconfigure/restart clears it. It is
+  not distributed, so another CLIProxyAPI process may repeat the analysis.
 - `deepseek-v4-pro` is retained as a future-supported target, but its Responses
   availability currently depends on the upstream service. It is not required,
   probed, or release-tested in v0.1.0; real validation uses `deepseek-v4-flash`.

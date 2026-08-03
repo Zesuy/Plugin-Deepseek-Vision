@@ -23,6 +23,21 @@ type testAnalyzer struct {
 	continueC chan struct{}
 }
 
+type failOnceAnalyzer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (a *failOnceAnalyzer) Analyze(context.Context, string, string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls++
+	if a.calls == 1 {
+		return "", errors.New("transient failure")
+	}
+	return "Visible text: retry\nVisual description: success", nil
+}
+
 func (a *testAnalyzer) Analyze(ctx context.Context, ref, focus string) (string, error) {
 	a.mu.Lock()
 	a.refs = append(a.refs, ref)
@@ -136,6 +151,82 @@ func TestHandleRewritesVisibleHistoryAndCurrentImages(t *testing.T) {
 	analyzer.mu.Unlock()
 	if callCount != 2 {
 		t.Fatalf("analyzer calls=%d", callCount)
+	}
+}
+
+func TestHandleDeduplicatesWithinRequestAndCachesAcrossRequests(t *testing.T) {
+	analyzer := &testAnalyzer{}
+	r := newTestRuntime(t, analyzer)
+	defer r.Shutdown()
+	reference := "data:image/png;base64,AAAA"
+	body := `{"input":[{"role":"user","content":[{"type":"input_text","text":"same focus"},{"type":"input_image","image_url":"` + reference + `"},{"type":"input_image","image_url":"` + reference + `"}]}]}`
+	request := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
+	for i := 0; i < 2; i++ {
+		resp, err := r.Handle(request)
+		if err != nil || resp.Terminate || strings.Contains(string(resp.Body), "input_image") {
+			t.Fatalf("request %d response=%#v err=%v", i, resp, err)
+		}
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.refs)
+	analyzer.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("analyzer calls=%d, want one unique analysis", calls)
+	}
+
+	// Reconfigure publishes a fresh generation-local cache.
+	r.Reconfigure(testConfig(t))
+	if resp, err := r.Handle(request); err != nil || resp.Terminate {
+		t.Fatalf("post-reconfigure response=%#v err=%v", resp, err)
+	}
+	analyzer.mu.Lock()
+	calls = len(analyzer.refs)
+	analyzer.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("post-reconfigure analyzer calls=%d, want cache reset", calls)
+	}
+}
+
+func TestHandleCacheSeparatesDifferentFocusPrompts(t *testing.T) {
+	analyzer := &testAnalyzer{}
+	r := newTestRuntime(t, analyzer)
+	defer r.Shutdown()
+	reference := "https://example.com/shared.png"
+	for _, focus := range []string{"first focus", "second focus"} {
+		body := `{"input":[{"role":"user","content":[{"type":"input_text","text":"` + focus + `"},{"type":"input_image","image_url":"` + reference + `"}]}]}`
+		resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body))
+		if err != nil || resp.Terminate {
+			t.Fatalf("focus %q response=%#v err=%v", focus, resp, err)
+		}
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.refs)
+	analyzer.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("different focus prompts shared cache; calls=%d", calls)
+	}
+}
+
+func TestHandleDoesNotCacheAnalyzerFailures(t *testing.T) {
+	analyzer := &failOnceAnalyzer{}
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil })
+	r.Reconfigure(testConfig(t))
+	defer r.Shutdown()
+	body := `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`
+	request := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
+	first, err := r.Handle(request)
+	if err != nil || !first.Terminate || first.StatusCode != http.StatusBadGateway {
+		t.Fatalf("first response=%#v err=%v", first, err)
+	}
+	second, err := r.Handle(request)
+	if err != nil || second.Terminate || strings.Contains(string(second.Body), "input_image") {
+		t.Fatalf("second response=%#v err=%v", second, err)
+	}
+	analyzer.mu.Lock()
+	calls := analyzer.calls
+	analyzer.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("analyzer calls=%d, failed result was cached", calls)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 )
 
 func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
+	defer shutdownPlugin()
 	raw, err := handleMethod("plugin.register", []byte(`{"schema_version":2}`))
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,12 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	}
 	if len(wantFields) != 0 {
 		t.Fatalf("registration is missing representative config fields: %#v", wantFields)
+	}
+	afterAuth.RLock()
+	handler := afterAuth.handler
+	afterAuth.RUnlock()
+	if handler == nil {
+		t.Fatal("empty initial registration did not install the default host runtime")
 	}
 }
 

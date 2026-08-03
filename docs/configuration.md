@@ -33,9 +33,16 @@ The CPAMC form intentionally exposes only `vision_model` and `language`. Their
 descriptions include bilingual defaults. Advanced gating, timeout, and size
 controls remain available through YAML without overwhelming first-time setup.
 
-Deprecated host-mode fields from earlier builds are accepted and ignored to
-keep existing YAML loadable. `vision_backend: external` and legacy configs with
-`vision_base_url` are rejected; configure that model/provider in CLIProxyAPI.
+All deprecated fields from earlier builds, including `vision_backend`,
+`vision_base_url`, `vision_api_key_env`, retry, concurrency, and cache fields,
+are accepted only for decoding and unconditionally ignored. Configure the
+actual model/provider in CLIProxyAPI.
+
+Analysis reuse is intentionally not another configuration surface. Each runtime
+generation owns a fixed 128-entry LRU: data-URI analyses expire after 15 minutes
+and URL analyses after 2 minutes. Keys hash the image reference, model,
+normalized language, and complete prompt. Reconfigure or restart creates a
+fresh cache.
 
 `deepseek-v4-pro` is not enabled by default because its Responses endpoint is
 not part of the validated release surface. Add it explicitly to

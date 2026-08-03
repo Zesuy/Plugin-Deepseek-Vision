@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
@@ -26,6 +27,7 @@ type AnalyzerFactory func(*config.Config) (vision.Analyzer, error)
 type runtimeState struct {
 	cfg      *config.Config
 	factory  AnalyzerFactory
+	cache    *analysisCache
 	once     sync.Once
 	analyzer vision.Analyzer
 	err      error
@@ -77,7 +79,7 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 	}
 	r.mu.Lock()
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
-	r.current = &runtimeState{cfg: cfg, factory: r.factory}
+	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(defaultAnalysisCacheEntries)}
 	r.shutdown = false
 	r.mu.Unlock()
 }
@@ -158,21 +160,51 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return resp, nil
 	}
 
+	images := plan.Images()
+	results := make([]string, len(images))
+	type analysisJob struct {
+		key       string
+		ttl       time.Duration
+		reference string
+		focusHint string
+		indexes   []int
+	}
+	jobsByKey := make(map[string]*analysisJob, len(images))
+	jobs := make([]*analysisJob, 0, len(images))
+	for i := range images {
+		key, ttl := analysisCacheKey(images[i].Reference, cfg.VisionModel, cfg.Language, images[i].FocusHint)
+		if cached, ok := state.cache.Get(key); ok {
+			results[i] = cached
+			continue
+		}
+		if existing := jobsByKey[key]; existing != nil {
+			existing.indexes = append(existing.indexes, i)
+			continue
+		}
+		job := &analysisJob{key: key, ttl: ttl, reference: images[i].Reference, focusHint: images[i].FocusHint, indexes: []int{i}}
+		jobsByKey[key] = job
+		jobs = append(jobs, job)
+	}
+	if len(jobs) == 0 {
+		rewritten, rewriteErr := plan.RewriteText(results)
+		if rewriteErr != nil {
+			return terminateForError(rewriteErr), nil
+		}
+		return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
+	}
 	analyzer, analyzerErr := state.getAnalyzer()
 	if analyzerErr != nil {
 		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
 	}
-	images := plan.Images()
-	results := make([]string, len(images))
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
-	for i := range images {
-		i := i
+	for _, job := range jobs {
+		job := job
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, analyzeErr := safeAnalyze(ctx, analyzer, images[i].Reference, images[i].FocusHint, cfg.MaxResultChars)
+			result, analyzeErr := safeAnalyze(ctx, analyzer, job.reference, job.focusHint, cfg.MaxResultChars)
 			if analyzeErr != nil {
 				errMu.Lock()
 				if firstErr == nil {
@@ -182,7 +214,10 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 				cancel()
 				return
 			}
-			results[i] = result
+			state.cache.Set(job.key, result, job.ttl)
+			for _, index := range job.indexes {
+				results[index] = result
+			}
 		}()
 	}
 	wg.Wait()

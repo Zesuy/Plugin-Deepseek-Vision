@@ -6,7 +6,9 @@
   it has no key field, environment-variable credential, or external backend.
 - The plugin does not log Authorization headers, complete endpoint URLs,
   image data URIs or upstream response bodies.
-- The plugin does not cache model results or raw image bytes.
+- The plugin caches only derived analysis text and SHA-256 keys. It never keeps
+  raw image bytes or the original image reference in cache entries; URL entries
+  use a shorter TTL because their content may change.
 - Package scripts scan source and generated archives for obvious key markers and
   fail closed. This is a guardrail, not a replacement for organization-wide
   secret scanning.

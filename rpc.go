@@ -105,7 +105,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	}
 }
 
-func configure(_ string, raw []byte) error {
+func configure(method string, raw []byte) error {
 	observedEpoch := lifecycleEpoch.Load()
 	if lifecycleShutdownPending.Load() > 0 {
 		return errors.New("plugin shutdown is in progress")
@@ -119,22 +119,28 @@ func configure(_ string, raw []byte) error {
 	if req.SchemaVersion < pluginabi.SchemaVersion {
 		return fmt.Errorf("host schema version %d is unsupported; schema version %d or newer is required", req.SchemaVersion, pluginabi.SchemaVersion)
 	}
+	var cfg *config.Config
 	if len(strings.TrimSpace(string(req.ConfigYAML))) == 0 {
 		// Configuration is allowed to be incomplete while an operator edits it.
-		// Registration metadata must remain available so the management UI can
-		// render the fields needed to finish setup.
-		return nil
-	}
-	// Validate before entering the lifecycle critical section so a malformed
-	// update never delays shutdown. The validated snapshot is published after
-	// the runtime gate is installed below.
-	cfg, err := config.ParseYAML(req.ConfigYAML)
-	if err != nil {
-		// User configuration errors are non-fatal lifecycle events. Returning an
-		// RPC error makes CLIProxyAPI drop this plugin from its active snapshot,
-		// which also removes ConfigFields until restart. Keep the last known-good
-		// runtime (or the unavailable fail-closed fallback) and publish metadata.
-		return nil
+		// Initial registration can safely install host-backed defaults; later empty
+		// edits preserve the last-known-good runtime.
+		if method != pluginabi.MethodPluginRegister {
+			return nil
+		}
+		cfg = config.Default()
+	} else {
+		// Validate before entering the lifecycle critical section so a malformed
+		// update never delays shutdown. The validated snapshot is published after
+		// the runtime gate is installed below.
+		var err error
+		cfg, err = config.ParseYAML(req.ConfigYAML)
+		if err != nil {
+			// User configuration errors are non-fatal lifecycle events. Returning an
+			// RPC error makes CLIProxyAPI drop this plugin from its active snapshot,
+			// which also removes ConfigFields until restart. Keep the last known-good
+			// runtime (or the unavailable fail-closed fallback) and publish metadata.
+			return nil
+		}
 	}
 	if cfg == nil {
 		return nil

@@ -43,8 +43,8 @@ type Config struct {
 }
 
 // rawConfig mirrors the active YAML contract. Deprecated fields remain
-// decodable for a smooth upgrade from the pre-host client, but they no longer
-// influence execution. An explicitly external backend is rejected.
+// decodable for a smooth upgrade from the pre-host client, but their values
+// are never interpreted and cannot influence execution.
 type rawConfig struct {
 	Enabled  *bool     `yaml:"enabled"`
 	Priority *int      `yaml:"priority"`
@@ -60,15 +60,15 @@ type rawConfig struct {
 	MaxResponseBytes       int      `yaml:"max_response_bytes"`
 	MaxResultChars         int      `yaml:"max_result_chars"`
 
-	// Deprecated host-client fields, accepted but ignored in host mode.
-	VisionBackend         string `yaml:"vision_backend"`
-	VisionBaseURL         string `yaml:"vision_base_url"`
-	VisionAPIKeyEnv       string `yaml:"vision_api_key_env"`
-	PerCallTimeoutSeconds int    `yaml:"per_call_timeout_seconds"`
-	RetryMaxAttempts      int    `yaml:"retry_max_attempts"`
-	MaxConcurrency        int    `yaml:"max_concurrency"`
-	CacheSize             int    `yaml:"cache_size"`
-	CacheTTLSeconds       int    `yaml:"cache_ttl_seconds"`
+	// Deprecated host-client fields, accepted and unconditionally ignored.
+	VisionBackend         yaml.Node `yaml:"vision_backend"`
+	VisionBaseURL         yaml.Node `yaml:"vision_base_url"`
+	VisionAPIKeyEnv       yaml.Node `yaml:"vision_api_key_env"`
+	PerCallTimeoutSeconds yaml.Node `yaml:"per_call_timeout_seconds"`
+	RetryMaxAttempts      yaml.Node `yaml:"retry_max_attempts"`
+	MaxConcurrency        yaml.Node `yaml:"max_concurrency"`
+	CacheSize             yaml.Node `yaml:"cache_size"`
+	CacheTTLSeconds       yaml.Node `yaml:"cache_ttl_seconds"`
 }
 
 type hostDocument struct {
@@ -251,13 +251,6 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	}
 	if raw.MaxResultChars != 0 || present["max_result_chars"] {
 		cfg.MaxResultChars = raw.MaxResultChars
-	}
-	if strings.EqualFold(strings.TrimSpace(raw.VisionBackend), "external") ||
-		(strings.TrimSpace(raw.VisionBackend) == "" && strings.TrimSpace(raw.VisionBaseURL) != "") {
-		return nil, errors.New("external vision backend is no longer supported; configure vision_model in CLIProxyAPI")
-	}
-	if backend := strings.TrimSpace(raw.VisionBackend); backend != "" && !strings.EqualFold(backend, "host") {
-		return nil, errors.New("vision_backend must be host")
 	}
 	models, err := canonicalTargetModels(cfg.TargetModels)
 	if err != nil {
