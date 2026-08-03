@@ -12,12 +12,6 @@ import (
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
-const (
-	defaultAnalysisCacheEntries = 128
-	dataAnalysisCacheTTL        = 15 * time.Minute
-	urlAnalysisCacheTTL         = 2 * time.Minute
-)
-
 type analysisCacheEntry struct {
 	key       string
 	value     string
@@ -95,10 +89,10 @@ func (c *analysisCache) Len() int {
 	return len(c.items)
 }
 
-func analysisCacheKey(reference, model, language, focusHint string) (string, time.Duration) {
-	ttl := urlAnalysisCacheTTL
+func analysisCacheKey(reference, model, language, focusHint string, dataTTL, urlTTL time.Duration) (string, time.Duration) {
+	ttl := urlTTL
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(reference)), "data:") {
-		ttl = dataAnalysisCacheTTL
+		ttl = dataTTL
 	}
 	hash := sha256.New()
 	for _, part := range []string{reference, strings.TrimSpace(model), vision.NormalizeLanguage(language), vision.BuildPrompt(focusHint, language)} {

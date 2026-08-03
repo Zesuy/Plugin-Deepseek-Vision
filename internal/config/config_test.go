@@ -15,6 +15,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.VisionModel != DefaultVisionModel || cfg.Language != DefaultLanguage || cfg.RequestTimeout != 120*time.Second {
 		t.Fatalf("defaults = %#v", cfg)
 	}
+	if cfg.AnalysisCacheSize != 128 || cfg.AnalysisCacheTTL != 15*time.Minute || cfg.URLAnalysisCacheTTL != 2*time.Minute {
+		t.Fatalf("cache defaults = %#v", cfg)
+	}
 	if len(cfg.TargetModels) != 1 || cfg.TargetModels[0] != "deepseek-v4-flash" {
 		t.Fatalf("target models = %#v", cfg.TargetModels)
 	}
@@ -34,8 +37,26 @@ vision_model: host-vision
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VisionModel != "host-vision" {
+	if cfg.VisionModel != "host-vision" || cfg.AnalysisCacheSize != DefaultAnalysisCacheSize {
 		t.Fatalf("config = %#v", cfg)
+	}
+}
+
+func TestAnalysisCacheConfiguration(t *testing.T) {
+	cfg, err := ParseYAML([]byte(`
+analysis_cache_size: 3
+analysis_cache_ttl_seconds: 60
+analysis_url_cache_ttl_seconds: 10
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AnalysisCacheSize != 3 || cfg.AnalysisCacheTTL != time.Minute || cfg.URLAnalysisCacheTTL != 10*time.Second {
+		t.Fatalf("cache config = %#v", cfg)
+	}
+	disabled, err := ParseYAML([]byte("analysis_cache_size: 0"))
+	if err != nil || disabled.AnalysisCacheSize != 0 {
+		t.Fatalf("disabled cache = %#v, err=%v", disabled, err)
 	}
 }
 
@@ -124,6 +145,10 @@ func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 		"max_image_reference_bytes: 1",
 		"max_response_bytes: 1",
 		"max_result_chars: 0",
+		"analysis_cache_size: -1",
+		"analysis_cache_size: 10001",
+		"analysis_cache_ttl_seconds: 0",
+		"analysis_url_cache_ttl_seconds: 0",
 	} {
 		if _, err := ParseYAML([]byte(raw)); err == nil {
 			t.Errorf("ParseYAML(%q) error = nil", raw)

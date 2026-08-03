@@ -107,8 +107,9 @@ release assets.
   containing visible text and a visual description. OCR and visual explanation
   are intentionally VLM-first and returned in one call.
 - Identical image/model/language/full-prompt work is deduplicated within one
-  request and reused across requests through a 128-entry TTL cache. Data URIs
-  use a 15-minute TTL, URLs use 2 minutes, and reconfigure starts a fresh cache.
+  request and reused across requests through a configurable TTL cache. Defaults
+  are 128 entries, 15 minutes for data URIs, and 2 minutes for URLs;
+  reconfigure starts a fresh cache.
 - Requests are bounded by image count, body/reference/response sizes, and a
   total preprocessing deadline.
 - Invalid or incomplete configuration edits never unregister the plugin. The

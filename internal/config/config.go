@@ -23,6 +23,9 @@ const (
 	DefaultMaxImageRefBytes  = 15 * 1024 * 1024
 	DefaultMaxResponseBytes  = 4 * 1024 * 1024
 	DefaultMaxResultChars    = 20_000
+	DefaultAnalysisCacheSize = 128
+	DefaultAnalysisCacheTTL  = 15 * 60
+	DefaultURLCacheTTL       = 2 * 60
 	// MaxRequestBytesLimit is the largest raw Responses body accepted by
 	// configuration. The native ABI separately accounts for envelope overhead.
 	MaxRequestBytesLimit = 32 * 1024 * 1024
@@ -40,6 +43,9 @@ type Config struct {
 	MaxImageReferenceBytes int
 	MaxResponseBytes       int
 	MaxResultChars         int
+	AnalysisCacheSize      int
+	AnalysisCacheTTL       time.Duration
+	URLAnalysisCacheTTL    time.Duration
 }
 
 // rawConfig mirrors the active YAML contract. Deprecated fields remain
@@ -59,6 +65,9 @@ type rawConfig struct {
 	MaxImageReferenceBytes int      `yaml:"max_image_reference_bytes"`
 	MaxResponseBytes       int      `yaml:"max_response_bytes"`
 	MaxResultChars         int      `yaml:"max_result_chars"`
+	AnalysisCacheSize      int      `yaml:"analysis_cache_size"`
+	AnalysisCacheTTL       int      `yaml:"analysis_cache_ttl_seconds"`
+	URLAnalysisCacheTTL    int      `yaml:"analysis_url_cache_ttl_seconds"`
 
 	// Deprecated host-client fields, accepted and unconditionally ignored.
 	VisionBackend         yaml.Node `yaml:"vision_backend"`
@@ -252,6 +261,15 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	if raw.MaxResultChars != 0 || present["max_result_chars"] {
 		cfg.MaxResultChars = raw.MaxResultChars
 	}
+	if raw.AnalysisCacheSize != 0 || present["analysis_cache_size"] {
+		cfg.AnalysisCacheSize = raw.AnalysisCacheSize
+	}
+	if raw.AnalysisCacheTTL != 0 || present["analysis_cache_ttl_seconds"] {
+		cfg.AnalysisCacheTTL = raw.AnalysisCacheTTL
+	}
+	if raw.URLAnalysisCacheTTL != 0 || present["analysis_url_cache_ttl_seconds"] {
+		cfg.URLAnalysisCacheTTL = raw.URLAnalysisCacheTTL
+	}
 	models, err := canonicalTargetModels(cfg.TargetModels)
 	if err != nil {
 		return nil, err
@@ -270,6 +288,9 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 		MaxImageReferenceBytes: cfg.MaxImageReferenceBytes,
 		MaxResponseBytes:       cfg.MaxResponseBytes,
 		MaxResultChars:         cfg.MaxResultChars,
+		AnalysisCacheSize:      cfg.AnalysisCacheSize,
+		AnalysisCacheTTL:       time.Duration(cfg.AnalysisCacheTTL) * time.Second,
+		URLAnalysisCacheTTL:    time.Duration(cfg.URLAnalysisCacheTTL) * time.Second,
 	}, nil
 }
 
@@ -318,6 +339,15 @@ func validateRaw(raw rawConfig) error {
 	if raw.MaxResultChars < 1 || raw.MaxResultChars > 100_000 {
 		return errors.New("max_result_chars must be between 1 and 100000")
 	}
+	if raw.AnalysisCacheSize < 0 || raw.AnalysisCacheSize > 10_000 {
+		return errors.New("analysis_cache_size must be between 0 and 10000")
+	}
+	if raw.AnalysisCacheTTL < 1 || raw.AnalysisCacheTTL > 7*24*3600 {
+		return errors.New("analysis_cache_ttl_seconds must be between 1 and 604800")
+	}
+	if raw.URLAnalysisCacheTTL < 1 || raw.URLAnalysisCacheTTL > 7*24*3600 {
+		return errors.New("analysis_url_cache_ttl_seconds must be between 1 and 604800")
+	}
 	return nil
 }
 
@@ -334,6 +364,9 @@ func defaultRaw() defaults {
 		MaxImageReferenceBytes: DefaultMaxImageRefBytes,
 		MaxResponseBytes:       DefaultMaxResponseBytes,
 		MaxResultChars:         DefaultMaxResultChars,
+		AnalysisCacheSize:      DefaultAnalysisCacheSize,
+		AnalysisCacheTTL:       DefaultAnalysisCacheTTL,
+		URLAnalysisCacheTTL:    DefaultURLCacheTTL,
 	}
 }
 
@@ -349,5 +382,8 @@ func defaultConfig() *Config {
 		MaxImageReferenceBytes: d.MaxImageReferenceBytes,
 		MaxResponseBytes:       d.MaxResponseBytes,
 		MaxResultChars:         d.MaxResultChars,
+		AnalysisCacheSize:      d.AnalysisCacheSize,
+		AnalysisCacheTTL:       time.Duration(d.AnalysisCacheTTL) * time.Second,
+		URLAnalysisCacheTTL:    time.Duration(d.URLAnalysisCacheTTL) * time.Second,
 	}
 }

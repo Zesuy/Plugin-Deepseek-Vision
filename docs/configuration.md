@@ -17,6 +17,9 @@ an invalid update leaves the previous snapshot active.
 | `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
 | `max_response_bytes` | VLM response limit | 4 MiB |
 | `max_result_chars` | Extracted result limit | 20,000 |
+| `analysis_cache_size` | Maximum derived-text cache entries; `0` disables | 128 |
+| `analysis_cache_ttl_seconds` | Data-URI analysis TTL | 900 |
+| `analysis_url_cache_ttl_seconds` | URL-image analysis TTL | 120 |
 
 The native ABI applies an additional process-wide admission budget of 32 MiB of
 raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
@@ -29,28 +32,31 @@ nested execution skips this plugin's own interceptor, so it does not recurse.
 No additional VLM endpoint or key is supported or required. CLIProxyAPI also
 owns provider protocol translation, transport, retry, and credential policy.
 
-The CPAMC form intentionally exposes only `vision_model` and `language`. Their
-descriptions include bilingual defaults. Advanced gating, timeout, and size
-controls remain available through YAML without overwhelming first-time setup.
+The CPAMC form exposes `vision_model`, `language`, and the three cache controls.
+Their descriptions include bilingual defaults. Advanced gating, timeout, and
+size controls remain available through YAML.
 
 All deprecated fields from earlier builds, including `vision_backend`,
 `vision_base_url`, `vision_api_key_env`, retry, concurrency, and cache fields,
 are accepted only for decoding and unconditionally ignored. Configure the
 actual model/provider in CLIProxyAPI.
 
-Analysis reuse is intentionally not another configuration surface. Each runtime
-generation owns a fixed 128-entry LRU: data-URI analyses expire after 15 minutes
-and URL analyses after 2 minutes. Keys hash the image reference, model,
-normalized language, and complete prompt. Reconfigure or restart creates a
-fresh cache.
+Each runtime generation owns an LRU using the configured capacity and TTLs.
+Keys hash the image reference, model, normalized language, and complete prompt.
+Reconfigure or restart creates a fresh cache. Setting `analysis_cache_size: 0`
+disables cross-request reuse while retaining single-request deduplication.
 
 `deepseek-v4-pro` is not enabled by default because its Responses endpoint is
 not part of the validated release surface. Add it explicitly to
 `target_models` only after verifying that upstream path in your deployment.
 
-The VLM prompt asks for both visible text and visual/layout context in one
-response. A short text focus hint from the surrounding request may be included;
-image text is treated as untrusted data and never as an instruction.
+The VLM prompt is not a generic caption request. It requires a `Visible text:`
+section that faithfully transcribes text, code, tables, labels, and errors
+(`[illegible]` instead of guessing), plus a `Visual description:` section for
+UI/layout, objects, relationships, charts, and context. Image text is declared
+untrusted and must never be followed as an instruction. The description uses
+the configured language while transcription preserves original characters. A
+bounded 2,000-rune focus hint from surrounding user text may be appended.
 
 ## Gate and pass-through rules
 

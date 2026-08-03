@@ -238,7 +238,7 @@ curl -sS \
 - VLM 会收到图片引用和一段有界的上下文提示；请确认供应商的数据保留、访问控制与数据驻留政策。
 - DeepSeek 收到的是 VLM 生成的视觉分析文本，不是原始图片。
 - 每个唯一的“图片 + 模型 + 语言 + 完整提示”产生一次宿主模型调用；单请求重复图片会合并，跨请求可命中 TTL 缓存。
-- data URI 结果默认缓存 15 分钟，URL 图片默认缓存 2 分钟；缓存最多 128 项，重配置或重启后清空。
+- data URI 默认缓存 15 分钟，URL 图片默认缓存 2 分钟，默认最多 128 项；三项均可配置，重配置或重启后清空。
 - 费用由 VLM 调用与追加给 DeepSeek 的文本 token 共同决定。
 - CLIProxyAPI 负责供应商 HTTP 传输、鉴权、协议转换与重试；生产环境仍应配置网络出口与 allowlist。
 
@@ -310,7 +310,7 @@ CLIPROXY_ROOT=/path/to/CLIProxyAPI ./scripts/host-e2e.sh
 <details>
 <summary><strong>为什么目标图片请求返回 502？</strong></summary>
 
-常见原因是 `vision_model` 未在 CLIProxyAPI 中配置、宿主视觉模型不支持图片、外部模式的 endpoint/key 不可用、VLM 返回错误或结果无效。502 是有意的 fail-closed 行为：插件不会绕过预处理并把原图发送给 DeepSeek。
+常见原因是 `vision_model` 未在 CLIProxyAPI 中配置、宿主视觉模型不支持图片、VLM 返回错误或结果无效。502 是有意的 fail-closed 行为：插件不会绕过预处理并把原图发送给 DeepSeek。
 
 </details>
 

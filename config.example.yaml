@@ -18,3 +18,8 @@ plugins:
       max_image_reference_bytes: 15728640
       max_response_bytes: 4194304
       max_result_chars: 20000
+
+      # Derived-text cache. Set size to 0 to disable.
+      analysis_cache_size: 128
+      analysis_cache_ttl_seconds: 900
+      analysis_url_cache_ttl_seconds: 120

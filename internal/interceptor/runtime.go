@@ -79,7 +79,7 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 	}
 	r.mu.Lock()
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
-	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(defaultAnalysisCacheEntries)}
+	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize)}
 	r.shutdown = false
 	r.mu.Unlock()
 }
@@ -172,7 +172,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	jobsByKey := make(map[string]*analysisJob, len(images))
 	jobs := make([]*analysisJob, 0, len(images))
 	for i := range images {
-		key, ttl := analysisCacheKey(images[i].Reference, cfg.VisionModel, cfg.Language, images[i].FocusHint)
+		key, ttl := analysisCacheKey(images[i].Reference, cfg.VisionModel, cfg.Language, images[i].FocusHint, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
 		if cached, ok := state.cache.Get(key); ok {
 			results[i] = cached
 			continue

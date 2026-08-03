@@ -8,22 +8,24 @@ import (
 
 func TestAnalysisCacheKeyUsesContentAndPromptWithoutRetainingReference(t *testing.T) {
 	reference := "data:image/png;base64,AAAA"
-	first, firstTTL := analysisCacheKey(reference, "vision-model", "zh-CN", "focus")
-	second, secondTTL := analysisCacheKey(reference, "vision-model", "zh", "focus")
-	if first != second || firstTTL != dataAnalysisCacheTTL || secondTTL != dataAnalysisCacheTTL {
+	dataTTL := 7 * time.Minute
+	urlTTL := 30 * time.Second
+	first, firstTTL := analysisCacheKey(reference, "vision-model", "zh-CN", "focus", dataTTL, urlTTL)
+	second, secondTTL := analysisCacheKey(reference, "vision-model", "zh", "focus", dataTTL, urlTTL)
+	if first != second || firstTTL != dataTTL || secondTTL != dataTTL {
 		t.Fatalf("equivalent keys differ: %q/%s %q/%s", first, firstTTL, second, secondTTL)
 	}
 	if strings.Contains(first, reference) || len(first) != 64 {
 		t.Fatalf("cache key retained reference or is not SHA-256: %q", first)
 	}
-	changedFocus, _ := analysisCacheKey(reference, "vision-model", "zh", "other")
-	changedModel, _ := analysisCacheKey(reference, "other-model", "zh", "focus")
+	changedFocus, _ := analysisCacheKey(reference, "vision-model", "zh", "other", dataTTL, urlTTL)
+	changedModel, _ := analysisCacheKey(reference, "other-model", "zh", "focus", dataTTL, urlTTL)
 	if changedFocus == first || changedModel == first {
 		t.Fatal("cache key ignored prompt or model")
 	}
-	_, urlTTL := analysisCacheKey("https://example.com/image.png", "vision-model", "zh", "focus")
-	if urlTTL != urlAnalysisCacheTTL || urlTTL >= dataAnalysisCacheTTL {
-		t.Fatalf("URL TTL = %s, data TTL = %s", urlTTL, dataAnalysisCacheTTL)
+	_, gotURLTTL := analysisCacheKey("https://example.com/image.png", "vision-model", "zh", "focus", dataTTL, urlTTL)
+	if gotURLTTL != urlTTL || gotURLTTL >= dataTTL {
+		t.Fatalf("URL TTL = %s, data TTL = %s", gotURLTTL, dataTTL)
 	}
 }
 

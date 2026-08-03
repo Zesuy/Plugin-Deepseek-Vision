@@ -230,6 +230,29 @@ func TestHandleDoesNotCacheAnalyzerFailures(t *testing.T) {
 	}
 }
 
+func TestHandleAllowsCacheToBeDisabled(t *testing.T) {
+	analyzer := &testAnalyzer{}
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil })
+	cfg := testConfig(t)
+	cfg.AnalysisCacheSize = 0
+	r.Reconfigure(cfg)
+	defer r.Shutdown()
+	body := `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`
+	request := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
+	for i := 0; i < 2; i++ {
+		resp, err := r.Handle(request)
+		if err != nil || resp.Terminate {
+			t.Fatalf("request %d response=%#v err=%v", i, resp, err)
+		}
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.refs)
+	analyzer.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("analyzer calls=%d, disabled cache reused a result", calls)
+	}
+}
+
 func TestHandleGateUsesFinalModelAndExactPath(t *testing.T) {
 	analyzer := &testAnalyzer{}
 	r := newTestRuntime(t, analyzer)
