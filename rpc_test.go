@@ -32,26 +32,13 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
 	}
-	if len(result.Metadata.ConfigFields) != 16 {
-		t.Fatalf("config field count = %d, want 16", len(result.Metadata.ConfigFields))
+	if len(result.Metadata.ConfigFields) != 3 {
+		t.Fatalf("config field count = %d, want 3 essential fields", len(result.Metadata.ConfigFields))
 	}
 	wantFields := map[string]pluginapi.ConfigFieldType{
-		"target_models":             pluginapi.ConfigFieldTypeArray,
-		"vision_base_url":           pluginapi.ConfigFieldTypeString,
-		"vision_model":              pluginapi.ConfigFieldTypeString,
-		"vision_api_key_env":        pluginapi.ConfigFieldTypeString,
-		"language":                  pluginapi.ConfigFieldTypeString,
-		"request_timeout_seconds":   pluginapi.ConfigFieldTypeInteger,
-		"per_call_timeout_seconds":  pluginapi.ConfigFieldTypeInteger,
-		"retry_max_attempts":        pluginapi.ConfigFieldTypeInteger,
-		"max_concurrency":           pluginapi.ConfigFieldTypeInteger,
-		"max_images_per_request":    pluginapi.ConfigFieldTypeInteger,
-		"max_request_bytes":         pluginapi.ConfigFieldTypeInteger,
-		"max_image_reference_bytes": pluginapi.ConfigFieldTypeInteger,
-		"max_response_bytes":        pluginapi.ConfigFieldTypeInteger,
-		"max_result_chars":          pluginapi.ConfigFieldTypeInteger,
-		"cache_size":                pluginapi.ConfigFieldTypeInteger,
-		"cache_ttl_seconds":         pluginapi.ConfigFieldTypeInteger,
+		"vision_backend": pluginapi.ConfigFieldTypeEnum,
+		"vision_model":   pluginapi.ConfigFieldTypeString,
+		"language":       pluginapi.ConfigFieldTypeEnum,
 	}
 	for _, field := range result.Metadata.ConfigFields {
 		if field.Description == "" {
@@ -63,13 +50,32 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 			}
 			delete(wantFields, field.Name)
 		}
+		if field.Name == "language" {
+			want := []string{"zh", "en", "auto"}
+			if len(field.EnumValues) != len(want) {
+				t.Errorf("language enum = %#v, want %#v", field.EnumValues, want)
+			} else {
+				for i := range want {
+					if field.EnumValues[i] != want[i] {
+						t.Errorf("language enum = %#v, want %#v", field.EnumValues, want)
+						break
+					}
+				}
+			}
+		}
+		if field.Name == "vision_backend" {
+			want := []string{"host", "external"}
+			if len(field.EnumValues) != len(want) || field.EnumValues[0] != want[0] || field.EnumValues[1] != want[1] {
+				t.Errorf("vision_backend enum = %#v, want %#v", field.EnumValues, want)
+			}
+		}
 	}
 	if len(wantFields) != 0 {
 		t.Fatalf("registration is missing representative config fields: %#v", wantFields)
 	}
 }
 
-func TestRegisterWithIncompleteConfigStillPublishesConfigFields(t *testing.T) {
+func TestLifecycleWithIncompleteConfigKeepsRegistrationMetadata(t *testing.T) {
 	defer shutdownPlugin()
 	request, err := json.Marshal(lifecycleRequest{
 		SchemaVersion: pluginabi.SchemaVersion,
@@ -93,8 +99,18 @@ func TestRegisterWithIncompleteConfigStillPublishesConfigFields(t *testing.T) {
 	if len(result.Metadata.ConfigFields) == 0 {
 		t.Fatal("metadata-only registration did not expose ConfigFields")
 	}
-	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, request); err == nil {
-		t.Fatal("incomplete reconfigure unexpectedly succeeded")
+	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, request); err != nil {
+		t.Fatalf("incomplete reconfigure removed registration metadata: %v", err)
+	}
+	malformed, err := json.Marshal(lifecycleRequest{
+		SchemaVersion: pluginabi.SchemaVersion,
+		ConfigYAML:    []byte("vision_base_url: [\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, malformed); err != nil {
+		t.Fatalf("malformed user configuration removed registration metadata: %v", err)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 )
 
 var pluginRuntime = interceptor.NewRuntime(buildVisionService)
+var hostVisionExecute vision.HostExecuteFunc = executeHostModel
 
 func reconfigureRuntimeWithConfig(cfg *config.Config) {
 	pluginRuntime.Reconfigure(cfg)
@@ -28,27 +29,40 @@ func buildVisionService(cfg *config.Config, generation uint64, limiter preproces
 	if cfg == nil {
 		return nil, errors.New("vision configuration is unavailable")
 	}
-	token := strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv))
-	if token == "" {
-		return nil, errors.New("vision API key is unavailable")
+	var analyzer vision.Analyzer
+	var err error
+	if cfg.VisionBackend == config.VisionBackendExternal {
+		token := strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv))
+		if token == "" {
+			return nil, errors.New("vision API key environment variable is unavailable")
+		}
+		analyzer, err = vision.NewClient(vision.Options{
+			BaseURL:                cfg.VisionBaseURL,
+			Model:                  cfg.VisionModel,
+			Token:                  token,
+			RequestTimeout:         cfg.PerCallTimeout,
+			MaxResponseBytes:       int64(cfg.MaxResponseBytes),
+			MaxResultChars:         cfg.MaxResultChars,
+			MaxAttempts:            cfg.RetryMaxAttempts,
+			MaxImageReferenceBytes: cfg.MaxImageReferenceBytes,
+			ConfigGeneration:       fmt.Sprintf("%d", generation),
+			Language:               cfg.Language,
+		})
+	} else {
+		analyzer, err = vision.NewHostClient(vision.HostOptions{
+			Model:                  cfg.VisionModel,
+			MaxResponseBytes:       int64(cfg.MaxResponseBytes),
+			MaxResultChars:         cfg.MaxResultChars,
+			MaxImageReferenceBytes: cfg.MaxImageReferenceBytes,
+			Language:               cfg.Language,
+			Execute:                hostVisionExecute,
+		})
 	}
-	client, err := vision.NewClient(vision.Options{
-		BaseURL:                cfg.VisionBaseURL,
-		Model:                  cfg.VisionModel,
-		Token:                  token,
-		RequestTimeout:         cfg.PerCallTimeout,
-		MaxResponseBytes:       int64(cfg.MaxResponseBytes),
-		MaxResultChars:         cfg.MaxResultChars,
-		MaxAttempts:            cfg.RetryMaxAttempts,
-		MaxImageReferenceBytes: cfg.MaxImageReferenceBytes,
-		ConfigGeneration:       fmt.Sprintf("%d", generation),
-		Language:               cfg.Language,
-	})
 	if err != nil {
 		return nil, err
 	}
 	service, err := preprocess.NewService(preprocess.Options{
-		Analyzer:               client,
+		Analyzer:               analyzer,
 		Cache:                  cache.NewLRU(cfg.CacheSize, cfg.CacheTTL),
 		MaxConcurrency:         cfg.MaxConcurrency,
 		MaxImages:              cfg.MaxImagesPerRequest,
@@ -61,7 +75,9 @@ func buildVisionService(cfg *config.Config, generation uint64, limiter preproces
 		Limiter:                limiter,
 	})
 	if err != nil {
-		_ = client.Close()
+		if closer, ok := analyzer.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 		return nil, err
 	}
 	return service, nil

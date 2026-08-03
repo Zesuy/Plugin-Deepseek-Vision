@@ -12,7 +12,7 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseYAML(nil): %v", err)
 	}
-	if cfg.VisionModel != DefaultVisionModel || cfg.RequestTimeout != 120*time.Second {
+	if cfg.VisionBackend != VisionBackendHost || cfg.VisionModel != DefaultVisionModel || cfg.RequestTimeout != 120*time.Second {
 		t.Fatalf("defaults = %#v", cfg)
 	}
 	if cfg.VisionBaseURL != "" {
@@ -20,6 +20,23 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if len(cfg.TargetModels) != 1 || cfg.TargetModels[0] != "deepseek-v4-flash" {
 		t.Fatalf("target models = %#v", cfg.TargetModels)
+	}
+}
+
+func TestVisionBackendDefaultsAndLegacyExternalInference(t *testing.T) {
+	host, err := ParseYAML([]byte("vision_model: host-vision"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.VisionBackend != VisionBackendHost || host.VisionBaseURL != "" {
+		t.Fatalf("host config = %#v", host)
+	}
+	external, err := ParseYAML([]byte("vision_base_url: https://vision.example/v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.VisionBackend != VisionBackendExternal {
+		t.Fatalf("legacy external backend = %q", external.VisionBackend)
 	}
 }
 
@@ -98,8 +115,9 @@ func TestVisionBaseURLIsTrimmedAndCanonicalized(t *testing.T) {
 func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 	for _, raw := range []string{
 		"unknown_field: true",
-		"vision_model: configured-without-endpoint",
 		"max_concurrency: 0",
+		"vision_backend: unknown",
+		"vision_backend: external",
 		"vision_base_url: file:///tmp/x",
 		"vision_base_url: https://vision.example/v1?token=secret",
 		"vision_base_url: https://vision.example/v1#fragment",

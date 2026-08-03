@@ -13,7 +13,10 @@ CLIProxyAPI request
   -> DeepSeek executor (only after all replacements succeed)
 ```
 
-插件只做请求预处理，不重写响应流、不实现独立 OCR、不提供模型注册和 executor。VLM 客户端是插件自有 HTTP client，配置快照在单次请求期间保持一致。
+插件只做请求预处理，不重写响应流、不实现独立 OCR、不提供模型注册和 executor。默认
+VLM 客户端通过 `host.model.execute` 复用 CLIProxyAPI 已配置的模型路由和凭证；宿主会在
+嵌套请求中跳过当前插件，避免递归。原有独立 HTTP client 只用于显式选择的 external
+兼容模式。配置快照在单次请求期间保持一致。
 
 ## 模块职责边界
 
@@ -31,5 +34,6 @@ CLIProxyAPI request
 
 - 每请求图片数、引用大小、请求体、VLM 响应体和输出字符数都有硬上限。
 - 全局 HTTP 并发受 semaphore 限制；重复图片可由缓存/singleflight 合并。
-- API key 只通过环境变量注入；`.env`、动态库、日志和捕获响应均被 `.gitignore` 排除。
+- host 模式不接触、存储或转发 API key；凭证完全由 CLIProxyAPI 宿主管理。
+- external 兼容模式的 API key 只通过环境变量注入；`.env`、动态库、日志和捕获响应均被 `.gitignore` 排除。
 - 原图字节不写入缓存；日志只记录脱敏后的错误类别。

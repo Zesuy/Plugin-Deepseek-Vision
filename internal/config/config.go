@@ -19,9 +19,11 @@ import (
 )
 
 const (
-	// DefaultVisionBaseURL is intentionally empty. A deployment-specific VLM
-	// endpoint must be supplied explicitly; a baked-in LAN address could belong
-	// to an unrelated host after the plugin is moved to another network.
+	VisionBackendHost     = "host"
+	VisionBackendExternal = "external"
+	DefaultVisionBackend  = VisionBackendHost
+	// DefaultVisionBaseURL is empty because host mode routes the vision request
+	// through CLIProxyAPI and reuses the host's configured provider credentials.
 	DefaultVisionBaseURL     = ""
 	DefaultVisionModel       = "gpt-5.6-luna"
 	DefaultVisionAPIKeyEnv   = "DEEPSEEK_VISION_API_KEY"
@@ -48,6 +50,7 @@ const (
 // backing storage before publishing a snapshot.
 type Config struct {
 	TargetModels           []string
+	VisionBackend          string
 	VisionBaseURL          string
 	VisionModel            string
 	VisionAPIKeyEnv        string
@@ -75,6 +78,7 @@ type rawConfig struct {
 	Store    yaml.Node `yaml:"store"`
 
 	TargetModels           []string `yaml:"target_models"`
+	VisionBackend          string   `yaml:"vision_backend"`
 	VisionBaseURL          string   `yaml:"vision_base_url"`
 	VisionModel            string   `yaml:"vision_model"`
 	VisionAPIKeyEnv        string   `yaml:"vision_api_key_env"`
@@ -271,8 +275,16 @@ func validate(raw rawConfig, present ...map[string]bool) (*Config, error) {
 	if raw.TargetModels != nil || has("target_models") {
 		cfg.TargetModels = raw.TargetModels
 	}
+	if raw.VisionBackend != "" || has("vision_backend") {
+		cfg.VisionBackend = raw.VisionBackend
+	}
 	if raw.VisionBaseURL != "" || has("vision_base_url") {
 		cfg.VisionBaseURL = raw.VisionBaseURL
+	}
+	// Existing deployments predate vision_backend. A configured external URL is
+	// an unambiguous compatibility signal; otherwise new/empty configs use host.
+	if !has("vision_backend") && strings.TrimSpace(cfg.VisionBaseURL) != "" {
+		cfg.VisionBackend = VisionBackendExternal
 	}
 	if raw.VisionModel != "" || has("vision_model") {
 		cfg.VisionModel = raw.VisionModel
@@ -327,6 +339,7 @@ func validate(raw rawConfig, present ...map[string]bool) (*Config, error) {
 	publishedModels := append([]string(nil), cfg.TargetModels...)
 	return &Config{
 		TargetModels:           publishedModels,
+		VisionBackend:          strings.ToLower(strings.TrimSpace(cfg.VisionBackend)),
 		VisionBaseURL:          strings.TrimRight(strings.TrimSpace(cfg.VisionBaseURL), "/"),
 		VisionModel:            strings.TrimSpace(cfg.VisionModel),
 		VisionAPIKeyEnv:        strings.TrimSpace(cfg.VisionAPIKeyEnv),
@@ -366,22 +379,28 @@ func canonicalTargetModels(models []string) ([]string, error) {
 }
 
 func validateRaw(raw rawConfig) error {
-	u, err := url.Parse(strings.TrimSpace(raw.VisionBaseURL))
-	if err != nil || u.Scheme == "" || u.Host == "" || (!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
-		return errors.New("vision_base_url must be an absolute http or https URL")
+	backend := strings.ToLower(strings.TrimSpace(raw.VisionBackend))
+	if backend != VisionBackendHost && backend != VisionBackendExternal {
+		return errors.New("vision_backend must be host or external")
 	}
-	if u.User != nil {
-		return errors.New("vision_base_url must not contain credentials")
-	}
-	if u.Hostname() == "" || !validPort(u.Port()) {
-		return errors.New("vision_base_url must contain a valid host and port")
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("vision_base_url must not contain query or fragment")
-	}
-	path := strings.TrimRight(u.Path, "/")
-	if strings.HasSuffix(strings.ToLower(path), "/responses") {
-		return errors.New("vision_base_url must be a base URL without /responses")
+	if backend == VisionBackendExternal {
+		u, err := url.Parse(strings.TrimSpace(raw.VisionBaseURL))
+		if err != nil || u.Scheme == "" || u.Host == "" || (!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
+			return errors.New("vision_base_url must be an absolute http or https URL in external mode")
+		}
+		if u.User != nil {
+			return errors.New("vision_base_url must not contain credentials")
+		}
+		if u.Hostname() == "" || !validPort(u.Port()) {
+			return errors.New("vision_base_url must contain a valid host and port")
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("vision_base_url must not contain query or fragment")
+		}
+		path := strings.TrimRight(u.Path, "/")
+		if strings.HasSuffix(strings.ToLower(path), "/responses") {
+			return errors.New("vision_base_url must be a base URL without /responses")
+		}
 	}
 	if strings.TrimSpace(raw.VisionModel) == "" {
 		return errors.New("vision_model must not be empty")
@@ -444,6 +463,7 @@ type defaults = rawConfig
 func defaultRaw() defaults {
 	return defaults{
 		TargetModels:           []string{"deepseek-v4-flash"},
+		VisionBackend:          DefaultVisionBackend,
 		VisionBaseURL:          DefaultVisionBaseURL,
 		VisionModel:            DefaultVisionModel,
 		VisionAPIKeyEnv:        DefaultVisionAPIKeyEnv,
@@ -464,12 +484,11 @@ func defaultRaw() defaults {
 
 func defaultConfig() *Config {
 	d := defaultRaw()
-	// Defaults are a safe, non-effective snapshot. In particular, the endpoint
-	// remains empty until a deployment explicitly supplies one; ParseYAML of an
-	// empty document is retained for registration compatibility, while the
-	// runtime refuses to construct a client without a URL.
+	// Defaults use the host callback backend, so the plugin can reuse a vision
+	// model and credential already configured in CLIProxyAPI.
 	return &Config{
 		TargetModels:           append([]string(nil), d.TargetModels...),
+		VisionBackend:          d.VisionBackend,
 		VisionBaseURL:          "",
 		VisionModel:            d.VisionModel,
 		VisionAPIKeyEnv:        d.VisionAPIKeyEnv,

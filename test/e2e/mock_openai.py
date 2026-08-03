@@ -86,12 +86,26 @@ def handler_for(state: State):
                 payload = {}
 
             if state.role == "vlm":
-                # The plugin parser accepts output_text on a Responses payload.
+                analysis = "Visible text: E2E fixture text\nVisual description: E2E fixture visual analysis"
+                # CLIProxyAPI's OpenAI-compatible provider translates a
+                # Responses host callback to Chat Completions before it
+                # reaches the mock. Return the protocol requested on the wire
+                # so the host can translate it back to a Responses payload.
+                if self.path.endswith("/chat/completions"):
+                    self._json(200, {
+                        "id": "e2e-vlm-chat",
+                        "object": "chat.completion",
+                        "model": payload.get("model", "gpt-5.6-luna"),
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": analysis}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    })
+                    return
+                # Direct external-backend tests use the Responses endpoint.
                 self._json(200, {
                     "id": "e2e-vlm-response",
                     "object": "response",
                     "model": payload.get("model", "gpt-5.6-luna"),
-                    "output_text": "Visible text: E2E fixture text\nVisual description: E2E fixture visual analysis",
+                    "output_text": analysis,
                 })
                 return
 

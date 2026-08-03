@@ -207,7 +207,8 @@ func (s *Service) AnalyzeOne(ctx context.Context, image Image, focusHint string)
 	current := &call{done: make(chan struct{})}
 	s.inflight[key] = current
 	s.workers.Add(1)
-	go s.produce(key, current, image.Reference, focusHint)
+	workCtx := vision.WithHostCallbackID(s.rootCtx, vision.HostCallbackID(ctx))
+	go s.produce(workCtx, key, current, image.Reference, focusHint)
 	s.mu.Unlock()
 	return waitForCall(ctx, current)
 }
@@ -221,9 +222,9 @@ func waitForCall(ctx context.Context, current *call) (string, error) {
 	}
 }
 
-func (s *Service) produce(key string, current *call, reference, focusHint string) {
+func (s *Service) produce(ctx context.Context, key string, current *call, reference, focusHint string) {
 	defer s.workers.Done()
-	result, err := s.safeRun(s.rootCtx, reference, focusHint)
+	result, err := s.safeRun(ctx, reference, focusHint)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

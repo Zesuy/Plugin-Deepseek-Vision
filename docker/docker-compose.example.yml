@@ -1,7 +1,8 @@
 # CLIProxyAPI v7 example with the plugin directory mounted from the host.
 # Before starting, place deepseek-vision.so at:
 #   ${CLI_PROXY_PLUGIN_PATH:-./plugins}/linux/amd64/deepseek-vision.so
-# and export DEEPSEEK_VISION_API_KEY in the shell (never commit it to YAML).
+# The default host backend reuses CLIProxyAPI's configured model credentials;
+# no plugin-specific key or environment variable is required.
 services:
   cli-proxy-api:
     # Pin the image used by the validated Docker acceptance run. Override
@@ -10,10 +11,6 @@ services:
     container_name: cli-proxy-api
     environment:
       - DEPLOY=${DEPLOY:-}
-      # Pass through the host process environment without storing the secret
-      # in this YAML file. Do not capture `docker compose config` after the
-      # key is exported: Compose renders pass-through values in that output.
-      - DEEPSEEK_VISION_API_KEY
     ports:
       - "127.0.0.1:8317:8317"
     volumes:

@@ -58,14 +58,17 @@ outside this contract and are left to the host's normal handling.
    upgrade/rollback procedures.
 
 3. Copy [`config.example.yaml`](config.example.yaml) to the CLIProxyAPI
-   configuration location. Set the configured VLM credential environment
-   variable only in the runtime environment; never commit credentials.
+   configuration location. The default `host` backend reuses a vision-capable
+   model and credentials already configured in CLIProxyAPI, so the plugin does
+   not need a separate endpoint, API key, or Docker environment variable.
 
 4. Start CLIProxyAPI with its plugin root set to `./plugins`. A ready-to-edit
    Docker Compose example is in [`docker/docker-compose.example.yml`](docker/docker-compose.example.yml).
 
-The VLM endpoint is deployment-specific and must be set explicitly (there is
-no networked default). The default model is `gpt-5.6-luna`.
+The default vision model is `gpt-5.6-luna`; set `vision_model` to any
+vision-capable model available through CLIProxyAPI. The advanced `external`
+backend remains available for a separate OpenAI-compatible endpoint and reads
+its key from an environment variable rather than plugin configuration.
 
 ## Build and release
 
@@ -107,6 +110,10 @@ release assets.
   are intentionally VLM-first and returned in one call.
 - Requests are bounded by image count, body/reference/response sizes,
   concurrency, cache TTL and real HTTP deadlines.
+- Invalid or incomplete configuration edits never unregister the plugin. The
+  last known-good runtime remains active; if there is no valid runtime yet,
+  targeted image requests fail closed while the configuration UI stays
+  available.
 - For an eligible Responses request, malformed JSON returns 400, unsupported
   image references return 422, configured size limits return 413, and VLM,
   timeout, or rewrite failures return 502. Failures terminate the request and

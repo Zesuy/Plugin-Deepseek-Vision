@@ -107,9 +107,8 @@ plugins:
         source: "host-e2e"
         version: "0.1.0"
       target_models: [deepseek-v4-flash]
-      vision_base_url: "http://127.0.0.1:{vlm_port}/v1"
+      vision_backend: host
       vision_model: "gpt-5.6-luna"
-      vision_api_key_env: "E2E_VISION_KEY"
       language: "en"
       request_timeout_seconds: 10
       per_call_timeout_seconds: 3
@@ -123,6 +122,13 @@ plugins:
       cache_size: 16
       cache_ttl_seconds: 60
 openai-compatibility:
+  - name: vision-e2e
+    base-url: "http://127.0.0.1:{vlm_port}/v1"
+    api-key-entries:
+      - api-key: vision-host-key
+    models:
+      - name: gpt-5.6-luna
+        alias: gpt-5.6-luna
   - name: host-e2e
     base-url: "http://127.0.0.1:{upstream_port}/v1"
     api-key-entries:
@@ -141,7 +147,7 @@ openai-compatibility:
 pathlib.Path(path).write_text(text, encoding="utf-8")
 PY
 
-(cd "$TMP" && E2E_VISION_KEY=fixture-vlm-key "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
+(cd "$TMP" && "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
 HOST_PID=$!
 BASE="http://127.0.0.1:$HOST_PORT"
 
@@ -189,10 +195,10 @@ assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
 fields = {field["name"]: field["type"] for field in item["config_fields"]}
-assert len(fields) == 16, fields
-assert fields["target_models"] == "array", fields
-assert fields["vision_base_url"] == "string", fields
-assert fields["max_images_per_request"] == "integer", fields
+assert len(fields) == 3, fields
+assert fields["vision_backend"] == "enum", fields
+assert fields["vision_model"] == "string", fields
+assert fields["language"] == "enum", fields
 PY
 mgmt "$BASE/v0/management/plugins/deepseek-vision/config" >"$TMP/plugin-config.json"
 python3 - "$TMP/plugin-config.json" <<'PY'
@@ -202,6 +208,21 @@ assert payload.get("store", {}).get("source") == "host-e2e", payload
 assert payload.get("store", {}).get("version") == "0.1.0", payload
 PY
 echo "plugin registered/effective and store metadata accepted"
+
+# A user can leave an incomplete edit without making the plugin disappear from
+# the management snapshot. The last known-good host backend remains active.
+mgmt -X PATCH -H 'Content-Type: application/json' \
+  -d '{"vision_backend":"external","vision_base_url":null}' \
+  "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
+mgmt "$BASE/v0/management/plugins" | python3 -c '
+import json,sys
+item=next(x for x in json.load(sys.stdin)["plugins"] if x["id"]=="deepseek-vision")
+assert item["registered"] is True and item["effective_enabled"] is True, item
+'
+mgmt -X PATCH -H 'Content-Type: application/json' \
+  -d '{"vision_backend":"host"}' \
+  "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
+echo "incomplete edit preserved registration and last known-good runtime"
 
 post() {
   local path=$1

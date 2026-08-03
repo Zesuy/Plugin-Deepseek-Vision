@@ -43,7 +43,7 @@
 | ⚡ **多图并发** | 每张图片独立分析、受全局并发限制；全部成功后才按原顺序写回请求 |
 | ♻️ **缓存与请求合并** | 相同图片、模型、提示和配置命中进程内 LRU；并发重复分析会合并为一次调用 |
 | 🛡️ **Fail-closed 改写** | 任一图片处理失败即终止整次目标请求，不会把未处理原图继续发送给 DeepSeek |
-| 🔒 **默认安全边界** | 密钥只从环境变量读取；不缓存原图；限制请求体、图片数、引用大小、响应大小与超时 |
+| 🔒 **默认零额外密钥** | 通过宿主回调复用 CLIProxyAPI 已配置的视觉模型与凭证；不缓存原图，并限制请求体、并发与超时 |
 
 ## 支持范围
 
@@ -109,7 +109,7 @@ VLM 提示词明确把图片文字和 focus hint 都视为不可信数据，不�
 
 - CLIProxyAPI `v7.2.113`
 - Linux amd64 与支持 CGO 原生插件的运行环境
-- 一个支持 OpenAI-compatible **Responses API** 的 VLM 服务
+- CLIProxyAPI 中已配置一个支持图片的视觉模型（默认名称 `gpt-5.6-luna`）
 - 从源码构建时需要 Go `1.26`、CGO、C 编译器、`python3`、`nm`、`strings` 和 `sha256sum`
 
 ### 2. 构建发布包
@@ -154,16 +154,15 @@ plugins:
       target_models:
         - deepseek-v4-flash
 
-      # 填 API base，例如 .../v1；不要追加 /responses
-      vision_base_url: https://vlm.example.com/v1
+      # 默认通过 host.model.execute 复用宿主模型与凭证
+      vision_backend: host
       vision_model: gpt-5.6-luna
-
-      # 这里只写环境变量名，不写 API key
-      vision_api_key_env: DEEPSEEK_VISION_API_KEY
       language: zh
 ```
 
-再通过 systemd、容器 secret 或部署平台的密钥管理，把 `DEEPSEEK_VISION_API_KEY` 注入 **CLIProxyAPI 进程环境**。不要把 API key 写入 YAML、镜像、启动参数、仓库或日志。
+`host` 模式不需要给插件配置 endpoint 或 API key：CLIProxyAPI 根据 `vision_model` 完成模型路由并使用已有凭证，嵌套调用会自动跳过本插件，避免递归。
+
+如需继续使用独立的 OpenAI-compatible VLM endpoint，可在 YAML 中选择 `vision_backend: external`，并配置 `vision_base_url` 与 `vision_api_key_env`。不要把裸 API key 写入插件配置。
 
 完整默认值见 [`config.example.yaml`](config.example.yaml) 与 [配置参考](docs/configuration.md)。替换插件动态库后需要重启 CLIProxyAPI。
 
@@ -319,7 +318,7 @@ CLIPROXY_ROOT=/path/to/CLIProxyAPI ./scripts/host-e2e.sh
 <details>
 <summary><strong>为什么目标图片请求返回 502？</strong></summary>
 
-常见原因是 VLM key 未注入宿主进程、`vision_base_url` 错误地包含 `/responses`、VLM 返回 401/403/5xx、超时或结果无效。502 是有意的 fail-closed 行为：插件不会绕过预处理并把原图发送给 DeepSeek。
+常见原因是 `vision_model` 未在 CLIProxyAPI 中配置、宿主视觉模型不支持图片、外部模式的 endpoint/key 不可用、VLM 返回错误或结果无效。502 是有意的 fail-closed 行为：插件不会绕过预处理并把原图发送给 DeepSeek。
 
 </details>
 

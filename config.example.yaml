@@ -7,12 +7,10 @@ plugins:
       target_models:
         - deepseek-v4-flash
 
-      # OpenAI-compatible Responses endpoint. This value is deployment-specific
-      # and must be supplied explicitly; the plugin has no networked default.
-      vision_base_url: http://127.0.0.1:8317/v1
+      # Default: reuse a vision model and credentials already configured in
+      # CLIProxyAPI through the native host.model.execute callback.
+      vision_backend: host
       vision_model: gpt-5.6-luna
-      # The plugin reads the key from this environment variable only.
-      vision_api_key_env: DEEPSEEK_VISION_API_KEY
 
       language: zh
       request_timeout_seconds: 120
@@ -26,3 +24,8 @@ plugins:
       max_result_chars: 20000
       cache_size: 128
       cache_ttl_seconds: 900
+
+      # Advanced compatibility mode for an independent VLM endpoint:
+      # vision_backend: external
+      # vision_base_url: https://vlm.example.com/v1
+      # vision_api_key_env: DEEPSEEK_VISION_API_KEY

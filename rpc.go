@@ -32,6 +32,11 @@ type lifecycleRequest struct {
 	SchemaVersion uint32 `json:"schema_version"`
 }
 
+type requestInterceptRPC struct {
+	pluginapi.RequestInterceptRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type registration struct {
 	SchemaVersion uint32                 `json:"schema_version"`
 	Metadata      pluginapi.Metadata     `json:"metadata"`
@@ -101,7 +106,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	}
 }
 
-func configure(method string, raw []byte) error {
+func configure(_ string, raw []byte) error {
 	observedEpoch := lifecycleEpoch.Load()
 	if lifecycleShutdownPending.Load() > 0 {
 		return errors.New("plugin shutdown is in progress")
@@ -116,41 +121,28 @@ func configure(method string, raw []byte) error {
 		return fmt.Errorf("host schema version %d is unsupported; schema version %d or newer is required", req.SchemaVersion, pluginabi.SchemaVersion)
 	}
 	if len(strings.TrimSpace(string(req.ConfigYAML))) == 0 {
-		if method == pluginabi.MethodPluginRegister {
-			// Registration is also the management UI's metadata discovery seam. It
-			// must succeed before the host can expose ConfigFields to an operator.
-			return nil
-		}
-		return errors.New("explicit plugin configuration is required")
+		// Configuration is allowed to be incomplete while an operator edits it.
+		// Registration metadata must remain available so the management UI can
+		// render the fields needed to finish setup.
+		return nil
 	}
 	// Validate before entering the lifecycle critical section so a malformed
 	// update never delays shutdown. The validated snapshot is published after
 	// the runtime gate is installed below.
 	cfg, err := config.ParseYAML(req.ConfigYAML)
 	if err != nil {
-		if method == pluginabi.MethodPluginRegister {
-			// Do not create a configuration bootstrap deadlock: an incomplete or
-			// invalid initial document must not prevent the management UI from
-			// discovering the fields needed to repair it. Reconfigure remains strict.
-			return nil
-		}
-		return fmt.Errorf("validate plugin configuration: %w", err)
+		// User configuration errors are non-fatal lifecycle events. Returning an
+		// RPC error makes CLIProxyAPI drop this plugin from its active snapshot,
+		// which also removes ConfigFields until restart. Keep the last known-good
+		// runtime (or the unavailable fail-closed fallback) and publish metadata.
+		return nil
 	}
-	if cfg == nil || strings.TrimSpace(cfg.VisionBaseURL) == "" {
-		if method == pluginabi.MethodPluginRegister {
-			if cfg != nil {
-				rememberUnavailableTargets(cfg.TargetModels)
-			}
-			return nil
-		}
-		return errors.New("vision_base_url must be explicitly configured")
+	if cfg == nil {
+		return nil
 	}
-	if strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv)) == "" {
-		if method == pluginabi.MethodPluginRegister {
-			rememberUnavailableTargets(cfg.TargetModels)
-			return nil
-		}
-		return errors.New("vision API key environment variable is unavailable")
+	if cfg.VisionBackend == config.VisionBackendExternal && strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv)) == "" {
+		rememberUnavailableTargets(cfg.TargetModels)
+		return nil
 	}
 
 	lifecycleMu.Lock()
@@ -202,22 +194,9 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "target_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Final upstream models eligible for image preprocessing."},
-				{Name: "vision_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "OpenAI-compatible VLM base URL."},
-				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "VLM model identifier."},
-				{Name: "vision_api_key_env", Type: pluginapi.ConfigFieldTypeString, Description: "Environment variable containing the VLM API key."},
-				{Name: "language", Type: pluginapi.ConfigFieldTypeString, Description: "Preferred language for visual analysis."},
-				{Name: "request_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Total preprocessing deadline."},
-				{Name: "per_call_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Per-image VLM request deadline."},
-				{Name: "retry_max_attempts", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum attempts for transient VLM failures."},
-				{Name: "max_concurrency", Type: pluginapi.ConfigFieldTypeInteger, Description: "Global concurrent VLM call limit."},
-				{Name: "max_images_per_request", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum image blocks in a request."},
-				{Name: "max_request_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum intercepted request size."},
-				{Name: "max_image_reference_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum image URL or data reference size."},
-				{Name: "max_response_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum VLM response size."},
-				{Name: "max_result_chars", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum extracted VLM result characters."},
-				{Name: "cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum cached VLM results."},
-				{Name: "cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "VLM result cache lifetime."},
+				{Name: "vision_backend", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"host", "external"}, Description: "视觉调用方式：host 复用 CLIProxyAPI 已配置的模型与凭证；external 使用高级 YAML 中的独立 endpoint。默认值 / Default: host."},
+				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
+				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},
 			},
 		},
 		Capabilities: registrationCapability{RequestInterceptor: true},
@@ -233,9 +212,16 @@ func passThroughRequest(raw []byte) ([]byte, error) {
 }
 
 func interceptAfterAuth(raw []byte) ([]byte, error) {
-	var req pluginapi.RequestInterceptRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	var wrapped requestInterceptRPC
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
 		return nil, fmt.Errorf("decode request intercept: %w", err)
+	}
+	req := wrapped.RequestInterceptRequest
+	if wrapped.HostCallbackID != "" {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]any)
+		}
+		req.Metadata[interceptor.HostCallbackIDMetadataKey] = wrapped.HostCallbackID
 	}
 	afterAuth.RLock()
 	handler := afterAuth.handler

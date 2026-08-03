@@ -19,7 +19,7 @@
 
   失败为 `{"ok":false,"error":{"code":"...","message":"..."}}`。`result` 和 `error` 不同时存在。
 
-- `plugin.register` 和 `plugin.reconfigure` 的生命周期请求使用 SDK 示例定义的 snake_case 字段 `config_yaml`（JSON 中为 base64 字符串）和 `schema_version`；实现必须拒绝低于 schema 2 的宿主。该例外只适用于生命周期请求，不能推广到下述 RequestIntercept 结构。
+- `plugin.register` 和 `plugin.reconfigure` 的生命周期请求使用 SDK 示例定义的 snake_case 字段 `config_yaml`（JSON 中为 base64 字符串）和 `schema_version`；实现必须拒绝低于 schema 2 的宿主。用户 YAML 为空、字段缺失或校验失败不属于宿主契约错误：插件保持注册并继续使用最近一次成功配置；没有成功配置时保持 fail-closed unavailable 状态。该例外只适用于生命周期请求，不能推广到下述 RequestIntercept 结构。
 - 注册只声明 `request_interceptor: true`；不声明 request lifecycle capability，不要求或实现生命周期完成回调，也不注册模型、executor 或其他扩展点。
 
 ## 2. RequestIntercept JSON
@@ -79,10 +79,15 @@ alias 解析完全由 CLIProxyAPI 宿主负责；插件不重写 alias，也不�
 
 ## 4. 单 VLM 处理协议
 
-每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。VLM 使用
-OpenAI-compatible `POST {vision_base_url}/responses`，默认模型为
-`gpt-5.6-luna`。`vision_base_url` 必须显式配置，不存在网络地址默认值；
-API key 只从配置指定的环境变量读取，绝不进入仓库或日志。
+每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。默认
+`vision_backend: host` 通过 CLIProxyAPI 的 `host.model.execute` 执行
+OpenAI Responses 请求，默认模型为 `gpt-5.6-luna`。模型路由和凭证由宿主管理，
+插件不读取额外 key；宿主跳过当前插件以阻止嵌套调用递归。
+
+显式选择 `vision_backend: external` 时，插件改用 OpenAI-compatible
+`POST {vision_base_url}/responses`。该模式要求显式配置 `vision_base_url`，API key
+只从 `vision_api_key_env` 指定的环境变量读取，绝不进入仓库或日志。旧配置若包含
+`vision_base_url` 而没有 `vision_backend`，为保持兼容会自动推断为 external。
 
 请求核心形状：
 

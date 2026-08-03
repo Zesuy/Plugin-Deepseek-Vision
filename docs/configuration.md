@@ -9,9 +9,10 @@ an invalid update leaves the previous snapshot active.
 | --- | --- | --- |
 | `enabled`, `priority` | Host-owned switches | host-defined |
 | `target_models` | Final upstream models eligible for interception | `deepseek-v4-flash` |
-| `vision_base_url` | OpenAI-compatible Responses base URL | required; no networked default |
+| `vision_backend` | Vision execution backend: `host` or `external` | `host` |
 | `vision_model` | VLM model identifier | `gpt-5.6-luna` |
-| `vision_api_key_env` | Environment variable containing the key | `DEEPSEEK_VISION_API_KEY` |
+| `vision_base_url` | OpenAI-compatible Responses base URL in external mode | empty |
+| `vision_api_key_env` | External-mode environment variable containing the key | `DEEPSEEK_VISION_API_KEY` |
 | `language` | Preferred output language | `zh` |
 | `request_timeout_seconds` | Total deadline including retries | 120 |
 | `per_call_timeout_seconds` | Per-image request deadline | 60 |
@@ -29,10 +30,22 @@ raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
 subsequent JSON/rewrite allocations; it can reject a request before the larger
 per-configuration `max_request_bytes` ceiling is reached.
 
-`vision_base_url` must be an explicit HTTP(S) URL without embedded credentials,
-query, or fragment. It must stop at the API base (normally `.../v1`); the
-client appends `/responses` and rejects an already-suffixed path. API keys are
-read from the named environment variable only.
+Host mode calls `host.model.execute` with OpenAI Responses input and lets
+CLIProxyAPI route `vision_model` using its existing provider credentials. The
+nested execution skips this plugin's own interceptor, so it does not recurse.
+No additional VLM endpoint or key is required.
+
+External mode preserves the original direct HTTP client. `vision_base_url`
+must be an HTTP(S) API base without credentials, query, fragment, or a trailing
+`/responses`; the client appends that path. Its API key is read from the named
+environment variable only. Existing configurations that contain
+`vision_base_url` but omit `vision_backend` are automatically treated as
+external mode.
+
+The CPAMC form intentionally exposes only `vision_backend`, `vision_model`, and
+`language`. Their descriptions include bilingual defaults. Advanced routing,
+external-endpoint, timeout, concurrency, size, and cache controls remain
+available through YAML without overwhelming first-time setup.
 
 `deepseek-v4-pro` is not enabled by default because its Responses endpoint is
 not part of the validated release surface. Add it explicitly to

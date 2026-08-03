@@ -50,10 +50,11 @@ discovered but disabled or unconfigured binary can therefore show the generic
 "no declared visual configuration fields" message before its first load.
 
 For first-time CPAMC setup, enable the plugin and save once, wait until its
-status becomes `registered`, then reopen the configuration drawer. The plugin
-allows this first registration to remain metadata-only until
-`vision_base_url` and the API-key environment variable are ready; subsequent
-reconfigure operations still validate the complete configuration strictly.
+status becomes `registered`, then reopen the configuration drawer. Invalid or
+incomplete edits never return a lifecycle error to the host: the plugin stays
+registered and keeps the last known-good runtime, or remains safely unavailable
+when no valid generation exists. Correct the field and save again; restarting
+CLIProxyAPI is not required.
 
 Verify what the host received from the plugin with:
 
@@ -65,7 +66,8 @@ curl -fsS -H 'Authorization: Bearer <management-key>' \
       | {registered, effective_enabled, config_fields}'
 ```
 
-A current binary reports 16 fields. If `registered` remains `false`, restart
+A current binary reports three essential fields: backend, model, and language.
+If `registered` remains `false`, restart
 CLIProxyAPI after replacing the library and inspect the plugin registration
 error in the host log; an old binary or failed ABI load cannot publish field
 metadata.
@@ -88,10 +90,11 @@ required or probed service in this release.
 
 ## HTTP 502 from image requests
 
-Check that the key environment variable is present inside the CLIProxyAPI
-process/container and that `vision_base_url` is reachable from that runtime.
-The client appends `/responses` to the configured base. 401/403, malformed VLM
-JSON, response-size limits and exhausted retries are intentional hard failures.
+In host mode, check that `vision_model` exists in CLIProxyAPI and accepts image
+input through OpenAI Responses. In external mode, check that the key environment
+variable is present inside the process/container and that `vision_base_url` is
+reachable. The external client appends `/responses`. Provider errors, malformed
+VLM JSON, response-size limits and exhausted retries are intentional failures.
 The error returned to the client is redacted; inspect only service-side status
 metrics, never enable logging of request bodies or Authorization headers. For
 eligible Responses image requests, plugin failures are terminal (typically

@@ -92,10 +92,16 @@ The active path must end in the pinned
 `/linux/amd64/deepseek-vision-v0.1.0.so`, the metadata version must be
 `0.1.0`, and the config response must show `store.version: "0.1.0"`.
 
-Copy `config.example.yaml` into the CLIProxyAPI configuration directory and
-set `DEEPSEEK_VISION_API_KEY` in the service environment. The key is deliberately
-not a YAML value. Restart CLIProxyAPI after changing a library; configuration
-changes can be applied through the plugin lifecycle reconfigure operation.
+Copy `config.example.yaml` into the CLIProxyAPI configuration directory. The
+default `vision_backend: host` routes image analysis through a vision-capable
+model already configured in CLIProxyAPI, so the plugin needs no separate key or
+endpoint. Restart CLIProxyAPI after changing a library; configuration changes
+can be applied through the plugin lifecycle reconfigure operation.
+
+Only the advanced `vision_backend: external` compatibility mode requires a
+separate key. In that mode, set the environment variable named by
+`vision_api_key_env` (default: `DEEPSEEK_VISION_API_KEY`) in the service
+environment; never put the key itself in plugin YAML.
 
 ## Docker installation
 
@@ -119,16 +125,15 @@ logs and plugin root):
 
 ```bash
 docker compose -f docker/docker-compose.example.yml config
-export DEEPSEEK_VISION_API_KEY='replace-me'
 docker compose -f docker/docker-compose.example.yml up -d cli-proxy-api
 ```
 
 The plugin root defaults to `./plugins`; override it with
 `CLI_PROXY_PLUGIN_PATH=/absolute/path/to/plugins`. The example maps the config
-file read-only and passes only an environment-variable reference for the key.
-Run the configuration check before exporting the key (or avoid capturing its
-output), because Compose renders a pass-through environment value when it is
-present in the shell.
+file read-only and does not add a plugin credential environment variable. If
+you deliberately use the external backend, add the named variable to your own
+Compose deployment without committing its value; note that `docker compose
+config` may render exported pass-through values.
 
 ## Upgrade and rollback
 

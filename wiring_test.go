@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -78,11 +80,11 @@ cache_ttl_seconds: 60
 			t.Fatal(err)
 		}
 	}
-	call := func() {
+	call := func(image string) {
 		t.Helper()
 		req, err := json.Marshal(pluginapi.RequestInterceptRequest{
 			SourceFormat: "openai-response", Model: "deepseek-v4-flash",
-			Body:     []byte(`{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`),
+			Body:     []byte(fmt.Sprintf(`{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,%s"}]}]}`, image)),
 			Metadata: map[string]any{"request_path": "/v1/responses"},
 		})
 		if err != nil {
@@ -103,17 +105,99 @@ cache_ttl_seconds: 60
 	}
 
 	configureLanguage("plugin.register", "zh-CN")
-	call()
+	call("AAAA")
+	invalid, err := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("vision_base_url: [\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleMethod("plugin.reconfigure", invalid); err != nil {
+		t.Fatalf("invalid edit removed the last known-good runtime: %v", err)
+	}
+	call("AAAB")
 	configureLanguage("plugin.reconfigure", "en")
-	call()
+	call("AAAC")
 	mu.Lock()
 	got := append([]string(nil), prompts...)
 	mu.Unlock()
-	if len(got) != 2 {
-		t.Fatalf("VLM calls=%d, want two generations", len(got))
+	if len(got) != 3 {
+		t.Fatalf("VLM calls=%d, want three calls across two valid generations", len(got))
 	}
-	if !strings.Contains(got[0], "Simplified Chinese") || !strings.Contains(got[1], "in English") {
+	if !strings.Contains(got[0], "Simplified Chinese") || !strings.Contains(got[1], "Simplified Chinese") || !strings.Contains(got[2], "in English") {
 		t.Fatalf("language prompts not rotated: %#v", got)
+	}
+}
+
+func TestWiredHostBackendUsesConfiguredHostModel(t *testing.T) {
+	originalExecute := hostVisionExecute
+	defer func() {
+		hostVisionExecute = originalExecute
+		shutdownPlugin()
+	}()
+	var got pluginapi.HostModelExecutionRequest
+	var gotCallbackID string
+	hostVisionExecute = func(_ context.Context, request pluginapi.HostModelExecutionRequest, callbackID string) (pluginapi.HostModelExecutionResponse, error) {
+		got, gotCallbackID = request, callbackID
+		return pluginapi.HostModelExecutionResponse{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"output_text":"Visible text: fixture\nVisual description: screen"}`),
+		}, nil
+	}
+	configYAML := []byte(`
+target_models: [deepseek-v4-flash]
+vision_backend: host
+vision_model: host-vision-model
+language: auto
+request_timeout_seconds: 2
+per_call_timeout_seconds: 1
+retry_max_attempts: 1
+max_concurrency: 2
+max_images_per_request: 2
+max_request_bytes: 1048576
+max_image_reference_bytes: 1048576
+max_response_bytes: 1048576
+max_result_chars: 20000
+cache_size: 0
+cache_ttl_seconds: 60
+`)
+	registrationRequest, err := json.Marshal(lifecycleRequest{ConfigYAML: configYAML, SchemaVersion: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleMethod(pluginabi.MethodPluginRegister, registrationRequest); err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(requestInterceptRPC{
+		RequestInterceptRequest: pluginapi.RequestInterceptRequest{
+			SourceFormat: "openai-response",
+			Model:        "deepseek-v4-flash",
+			Body:         []byte(`{"input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]}`),
+			Metadata:     map[string]any{"request_path": "/v1/responses"},
+		},
+		HostCallbackID: "host-callback-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(pluginabi.MethodRequestInterceptAfter, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		t.Fatalf("host response envelope = %s, err=%v", raw, err)
+	}
+	var response pluginapi.RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Terminate || strings.Contains(string(response.Body), "input_image") {
+		t.Fatalf("intercept response = %#v", response)
+	}
+	if got.Model != "host-vision-model" || got.EntryProtocol != "openai-response" || got.ExitProtocol != "openai-response" {
+		t.Fatalf("host model request = %#v", got)
+	}
+	if gotCallbackID != "host-callback-1" || got.Headers.Get("Authorization") != "" {
+		t.Fatalf("callback=%q headers=%#v", gotCallbackID, got.Headers)
 	}
 }
 
@@ -188,7 +272,7 @@ cache_ttl_seconds: 60
 	}
 }
 
-func TestWiredRegistrationWithoutTokenPublishesMetadataAndTerminatesImageRequests(t *testing.T) {
+func TestWiredMissingTokenKeepsMetadataAndTerminatesImageRequests(t *testing.T) {
 	old, had := os.LookupEnv("WIRING_TEST_VISION_KEY")
 	_ = os.Unsetenv("WIRING_TEST_VISION_KEY")
 	defer func() {
@@ -236,8 +320,8 @@ cache_ttl_seconds: 60
 	if len(registered.Metadata.ConfigFields) == 0 {
 		t.Fatal("registration did not expose ConfigFields")
 	}
-	if _, err := handleMethod("plugin.reconfigure", reg); err == nil {
-		t.Fatal("missing token reconfigure unexpectedly reported ready")
+	if _, err := handleMethod("plugin.reconfigure", reg); err != nil {
+		t.Fatalf("missing token reconfigure removed registration metadata: %v", err)
 	}
 	req, err := json.Marshal(pluginapi.RequestInterceptRequest{
 		SourceFormat: "openai-response", Model: "deepseek-v4-flash",

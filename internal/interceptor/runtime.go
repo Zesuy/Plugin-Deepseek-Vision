@@ -23,6 +23,8 @@ import (
 
 var ErrRuntimeUnavailable = errors.New("vision interceptor runtime is unavailable")
 
+const HostCallbackIDMetadataKey = "__deepseek_vision_host_callback_id"
+
 // ServiceFactory constructs a service for one immutable configuration
 // generation. The factory is called lazily, only after a request has passed
 // the gate and contains at least one supported image.
@@ -267,7 +269,11 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	if !eligible(req, cfg) {
 		return resp, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.RequestTimeout)
+	baseCtx := context.Background()
+	if callbackID, _ := req.Metadata[HostCallbackIDMetadataKey].(string); callbackID != "" {
+		baseCtx = vision.WithHostCallbackID(baseCtx, callbackID)
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, cfg.RequestTimeout)
 	defer cancel()
 
 	plan, planErr := responses.Discover(req.Body, responses.Options{
@@ -420,7 +426,7 @@ func terminate(status int, typ, message string) pluginapi.RequestInterceptRespon
 
 func fingerprint(cfg *config.Config) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00", cfg.VisionBaseURL, cfg.VisionModel, cfg.VisionAPIKeyEnv, vision.NormalizeLanguage(cfg.Language), strings.Join(cfg.TargetModels, "\x00"), cfg.RequestTimeout, cfg.PerCallTimeout, cfg.RetryMaxAttempts, cfg.MaxConcurrency, cfg.MaxImagesPerRequest, cfg.MaxRequestBytes, cfg.MaxImageReferenceBytes, cfg.MaxResponseBytes, cfg.MaxResultChars, cfg.CacheSize)
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00", cfg.VisionBackend, cfg.VisionBaseURL, cfg.VisionModel, cfg.VisionAPIKeyEnv, vision.NormalizeLanguage(cfg.Language), strings.Join(cfg.TargetModels, "\x00"), cfg.RequestTimeout, cfg.PerCallTimeout, cfg.RetryMaxAttempts, cfg.MaxConcurrency, cfg.MaxImagesPerRequest, cfg.MaxRequestBytes, cfg.MaxImageReferenceBytes, cfg.MaxResponseBytes, cfg.MaxResultChars, cfg.CacheSize)
 	fmt.Fprintf(h, "%d", cfg.CacheTTL)
 	return hex.EncodeToString(h.Sum(nil))
 }
