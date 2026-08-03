@@ -79,15 +79,10 @@ alias 解析完全由 CLIProxyAPI 宿主负责；插件不重写 alias，也不�
 
 ## 4. 单 VLM 处理协议
 
-每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。默认
-`vision_backend: host` 通过 CLIProxyAPI 的 `host.model.execute` 执行
-OpenAI Responses 请求，默认模型为 `gpt-5.6-luna`。模型路由和凭证由宿主管理，
-插件不读取额外 key；宿主跳过当前插件以阻止嵌套调用递归。
-
-显式选择 `vision_backend: external` 时，插件改用 OpenAI-compatible
-`POST {vision_base_url}/responses`。该模式要求显式配置 `vision_base_url`，API key
-只从 `vision_api_key_env` 指定的环境变量读取，绝不进入仓库或日志。旧配置若包含
-`vision_base_url` 而没有 `vision_backend`，为保持兼容会自动推断为 external。
+每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。插件通过
+CLIProxyAPI 的 `host.model.execute` 执行 OpenAI Responses 请求，默认模型为
+`gpt-5.6-luna`。模型路由、凭证、供应商协议转换、传输和重试由宿主管理；插件不读取
+额外 key，宿主跳过当前插件以阻止嵌套调用递归。插件不提供 external HTTP 后端。
 
 请求核心形状：
 
@@ -151,4 +146,6 @@ Visual description:
 的请求，任何失败都必须终止，不能把原始图片作为降级路径继续交给 DeepSeek。非目标
 模型、其他路径、其他 source format 和无图请求则按门控规则原样旁路。
 
-只有所有图片都成功并完成 body 改写后，拦截器才返回成功结果；失败路径绝不向 DeepSeek executor 发起调用。HTTP client 必须设置总请求硬超时、响应体上限和可取消 context；重试次数受总 deadline 限制。
+只有所有图片都成功并完成 body 改写后，拦截器才返回成功结果；失败路径绝不向
+DeepSeek executor 发起调用。插件必须设置总预处理硬超时和响应体上限，并把可取消
+context 传给 `host.model.execute`；供应商传输与重试策略由 CLIProxyAPI 宿主负责。

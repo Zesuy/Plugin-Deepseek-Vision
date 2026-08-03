@@ -154,15 +154,12 @@ plugins:
       target_models:
         - deepseek-v4-flash
 
-      # 默认通过 host.model.execute 复用宿主模型与凭证
-      vision_backend: host
+      # 通过 host.model.execute 复用宿主模型与凭证
       vision_model: gpt-5.6-luna
       language: zh
 ```
 
-`host` 模式不需要给插件配置 endpoint 或 API key：CLIProxyAPI 根据 `vision_model` 完成模型路由并使用已有凭证，嵌套调用会自动跳过本插件，避免递归。
-
-如需继续使用独立的 OpenAI-compatible VLM endpoint，可在 YAML 中选择 `vision_backend: external`，并配置 `vision_base_url` 与 `vision_api_key_env`。不要把裸 API key 写入插件配置。
+插件不配置 endpoint 或 API key：CLIProxyAPI 根据 `vision_model` 完成模型路由、凭证选择、供应商协议转换和传输重试；嵌套调用会自动跳过本插件，避免递归。
 
 完整默认值见 [`config.example.yaml`](config.example.yaml) 与 [配置参考](docs/configuration.md)。替换插件动态库后需要重启 CLIProxyAPI。
 
@@ -228,14 +225,11 @@ curl -sS \
 | 配置项 | 默认值 |
 | --- | ---: |
 | 单请求图片数 | 4 |
-| VLM 全局并发 | 4 |
 | 原始请求体 | 20 MiB |
 | 单图片引用 | 15 MiB |
 | VLM 响应体 | 4 MiB |
 | 单次视觉结果 | 20,000 字符 |
-| 总请求 / 单图调用超时 | 120s / 60s |
-| 重试次数 | 3 |
-| 进程内 LRU | 128 项 / 900s |
+| 总预处理超时 | 120s |
 
 原生 ABI 另有 32 MiB 进程级 RPC 准入预算与最多 4 个并发回调，用于限制 C→Go 数据复制和 JSON 改写期间的内存放大。所有限制均可在 [配置文档](docs/configuration.md) 中查阅。
 
@@ -243,10 +237,9 @@ curl -sS \
 
 - VLM 会收到图片引用和一段有界的上下文提示；请确认供应商的数据保留、访问控制与数据驻留政策。
 - DeepSeek 收到的是 VLM 生成的视觉分析文本，不是原始图片。
-- 缓存只保存视觉分析文本与元数据，不保存原始图片字节；重启或重新配置后缓存清空。
-- 每张未命中缓存的图片通常产生一次 VLM 调用；多图会并发，但预处理仍会增加首字节延迟。
+- 每张图片产生一次宿主模型调用；多图会并发提交给宿主，但预处理仍会增加首字节延迟。
 - 费用由 VLM 调用与追加给 DeepSeek 的文本 token 共同决定。
-- HTTP 客户端不跟随重定向，并对超时、响应大小和可重试状态实施边界控制；生产环境仍应配置网络出口与 allowlist。
+- CLIProxyAPI 负责供应商 HTTP 传输、鉴权、协议转换与重试；生产环境仍应配置网络出口与 allowlist。
 
 更多说明见 [安全边界](docs/security.md) 与 [限制说明](docs/limitations.md)。
 
@@ -266,7 +259,7 @@ go vet ./...
 CLIPROXY_ROOT=/path/to/CLIProxyAPI ./scripts/host-e2e.sh
 ```
 
-测试覆盖注册与生命周期、直接模型与别名、流式请求、多图改写、缓存与并发、旁路规则、`file_id` 拒绝，以及 VLM 失败时不调用目标上游。详情见 [测试文档](docs/testing.md)。
+测试覆盖注册与生命周期、直接模型与别名、流式请求、多图改写、旁路规则、`file_id` 拒绝，以及 VLM 失败时不调用目标上游。详情见 [测试文档](docs/testing.md)。
 
 ## 项目结构
 
@@ -276,9 +269,7 @@ CLIPROXY_ROOT=/path/to/CLIProxyAPI ./scripts/host-e2e.sh
 ├── internal/
 │   ├── interceptor/               # 请求门控、运行时与 fail-closed 流程
 │   ├── responses/                 # Responses 图片发现、计划与安全改写
-│   ├── preprocess/                # 多图并发、缓存合并与生命周期
-│   ├── vision/                    # OpenAI-compatible VLM 客户端与提示词
-│   ├── cache/                     # 进程内 TTL LRU
+│   ├── vision/                    # host.model.execute 适配与提示词
 │   ├── config/                    # 配置解析、默认值与原子重配置
 │   └── safety/                    # 资源限制与错误脱敏
 ├── docs/                          # 契约、安装、配置、安全与排障文档

@@ -9,43 +9,33 @@ an invalid update leaves the previous snapshot active.
 | --- | --- | --- |
 | `enabled`, `priority` | Host-owned switches | host-defined |
 | `target_models` | Final upstream models eligible for interception | `deepseek-v4-flash` |
-| `vision_backend` | Vision execution backend: `host` or `external` | `host` |
 | `vision_model` | VLM model identifier | `gpt-5.6-luna` |
-| `vision_base_url` | OpenAI-compatible Responses base URL in external mode | empty |
-| `vision_api_key_env` | External-mode environment variable containing the key | `DEEPSEEK_VISION_API_KEY` |
 | `language` | Preferred output language | `zh` |
-| `request_timeout_seconds` | Total deadline including retries | 120 |
-| `per_call_timeout_seconds` | Per-image request deadline | 60 |
-| `retry_max_attempts` | Attempts for transient failures | 3 |
-| `max_concurrency` | Global VLM HTTP concurrency | 4 |
+| `request_timeout_seconds` | Total preprocessing deadline | 120 |
 | `max_images_per_request` | Image blocks accepted per request | 4 |
 | `max_request_bytes` | Raw Responses body limit | 20 MiB |
 | `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
 | `max_response_bytes` | VLM response limit | 4 MiB |
 | `max_result_chars` | Extracted result limit | 20,000 |
-| `cache_size`, `cache_ttl_seconds` | Result cache capacity and lifetime | 128 / 900 |
 
 The native ABI applies an additional process-wide admission budget of 32 MiB of
 raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
 subsequent JSON/rewrite allocations; it can reject a request before the larger
 per-configuration `max_request_bytes` ceiling is reached.
 
-Host mode calls `host.model.execute` with OpenAI Responses input and lets
+The plugin calls `host.model.execute` with OpenAI Responses input and lets
 CLIProxyAPI route `vision_model` using its existing provider credentials. The
 nested execution skips this plugin's own interceptor, so it does not recurse.
-No additional VLM endpoint or key is required.
+No additional VLM endpoint or key is supported or required. CLIProxyAPI also
+owns provider protocol translation, transport, retry, and credential policy.
 
-External mode preserves the original direct HTTP client. `vision_base_url`
-must be an HTTP(S) API base without credentials, query, fragment, or a trailing
-`/responses`; the client appends that path. Its API key is read from the named
-environment variable only. Existing configurations that contain
-`vision_base_url` but omit `vision_backend` are automatically treated as
-external mode.
+The CPAMC form intentionally exposes only `vision_model` and `language`. Their
+descriptions include bilingual defaults. Advanced gating, timeout, and size
+controls remain available through YAML without overwhelming first-time setup.
 
-The CPAMC form intentionally exposes only `vision_backend`, `vision_model`, and
-`language`. Their descriptions include bilingual defaults. Advanced routing,
-external-endpoint, timeout, concurrency, size, and cache controls remain
-available through YAML without overwhelming first-time setup.
+Deprecated host-mode fields from earlier builds are accepted and ignored to
+keep existing YAML loadable. `vision_backend: external` and legacy configs with
+`vision_base_url` are rejected; configure that model/provider in CLIProxyAPI.
 
 `deepseek-v4-pro` is not enabled by default because its Responses endpoint is
 not part of the validated release surface. Add it explicitly to

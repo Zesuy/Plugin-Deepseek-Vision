@@ -107,20 +107,14 @@ plugins:
         source: "host-e2e"
         version: "0.1.0"
       target_models: [deepseek-v4-flash]
-      vision_backend: host
       vision_model: "gpt-5.6-luna"
       language: "en"
       request_timeout_seconds: 10
-      per_call_timeout_seconds: 3
-      retry_max_attempts: 1
-      max_concurrency: 4
       max_images_per_request: 4
       max_request_bytes: 20971520
       max_image_reference_bytes: 1048576
       max_response_bytes: 1048576
       max_result_chars: 2000
-      cache_size: 16
-      cache_ttl_seconds: 60
 openai-compatibility:
   - name: vision-e2e
     base-url: "http://127.0.0.1:{vlm_port}/v1"
@@ -195,8 +189,7 @@ assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
 fields = {field["name"]: field["type"] for field in item["config_fields"]}
-assert len(fields) == 3, fields
-assert fields["vision_backend"] == "enum", fields
+assert len(fields) == 2, fields
 assert fields["vision_model"] == "string", fields
 assert fields["language"] == "enum", fields
 PY
@@ -210,9 +203,9 @@ PY
 echo "plugin registered/effective and store metadata accepted"
 
 # A user can leave an incomplete edit without making the plugin disappear from
-# the management snapshot. The last known-good host backend remains active.
+# the management snapshot. The last known-good runtime remains active.
 mgmt -X PATCH -H 'Content-Type: application/json' \
-  -d '{"vision_backend":"external","vision_base_url":null}' \
+  -d '{"vision_model":null}' \
   "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
 mgmt "$BASE/v0/management/plugins" | python3 -c '
 import json,sys
@@ -220,7 +213,7 @@ item=next(x for x in json.load(sys.stdin)["plugins"] if x["id"]=="deepseek-visio
 assert item["registered"] is True and item["effective_enabled"] is True, item
 '
 mgmt -X PATCH -H 'Content-Type: application/json' \
-  -d '{"vision_backend":"host"}' \
+  -d '{"vision_model":"gpt-5.6-luna"}' \
   "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
 echo "incomplete edit preserved registration and last known-good runtime"
 

@@ -13,8 +13,7 @@ before the DeepSeek upstream request is sent.
 
 The currently available and release-tested DeepSeek target is
 `deepseek-v4-flash`. `deepseek-v4-pro` is not required for this release, is not
-probed by the real gateway test, and remains pending upstream Responses
-availability.
+probed by release acceptance, and remains pending upstream Responses availability.
 
 The plugin is strict for eligible Responses image requests: if the VLM call
 fails, the original request is stopped with HTTP 502 and the unprocessed image
@@ -58,17 +57,16 @@ outside this contract and are left to the host's normal handling.
    upgrade/rollback procedures.
 
 3. Copy [`config.example.yaml`](config.example.yaml) to the CLIProxyAPI
-   configuration location. The default `host` backend reuses a vision-capable
-   model and credentials already configured in CLIProxyAPI, so the plugin does
-   not need a separate endpoint, API key, or Docker environment variable.
+   configuration location. The plugin reuses a vision-capable model and
+   credentials already configured in CLIProxyAPI, so it needs no separate
+   endpoint, API key, or Docker environment variable.
 
 4. Start CLIProxyAPI with its plugin root set to `./plugins`. A ready-to-edit
    Docker Compose example is in [`docker/docker-compose.example.yml`](docker/docker-compose.example.yml).
 
 The default vision model is `gpt-5.6-luna`; set `vision_model` to any
-vision-capable model available through CLIProxyAPI. The advanced `external`
-backend remains available for a separate OpenAI-compatible endpoint and reads
-its key from an environment variable rather than plugin configuration.
+vision-capable model available through CLIProxyAPI. CLIProxyAPI owns provider
+protocol translation, routing, credentials, transport, and retry policy.
 
 ## Build and release
 
@@ -108,8 +106,8 @@ release assets.
 - Each `input_image` is replaced in place with one `input_text` block
   containing visible text and a visual description. OCR and visual explanation
   are intentionally VLM-first and returned in one call.
-- Requests are bounded by image count, body/reference/response sizes,
-  concurrency, cache TTL and real HTTP deadlines.
+- Requests are bounded by image count, body/reference/response sizes, and a
+  total preprocessing deadline.
 - Invalid or incomplete configuration edits never unregister the plugin. The
   last known-good runtime remains active; if there is no valid runtime yet,
   targeted image requests fail closed while the configuration UI stays

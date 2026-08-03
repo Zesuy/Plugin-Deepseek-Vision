@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -32,13 +31,12 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
 	}
-	if len(result.Metadata.ConfigFields) != 3 {
-		t.Fatalf("config field count = %d, want 3 essential fields", len(result.Metadata.ConfigFields))
+	if len(result.Metadata.ConfigFields) != 2 {
+		t.Fatalf("config field count = %d, want 2 essential fields", len(result.Metadata.ConfigFields))
 	}
 	wantFields := map[string]pluginapi.ConfigFieldType{
-		"vision_backend": pluginapi.ConfigFieldTypeEnum,
-		"vision_model":   pluginapi.ConfigFieldTypeString,
-		"language":       pluginapi.ConfigFieldTypeEnum,
+		"vision_model": pluginapi.ConfigFieldTypeString,
+		"language":     pluginapi.ConfigFieldTypeEnum,
 	}
 	for _, field := range result.Metadata.ConfigFields {
 		if field.Description == "" {
@@ -61,12 +59,6 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 						break
 					}
 				}
-			}
-		}
-		if field.Name == "vision_backend" {
-			want := []string{"host", "external"}
-			if len(field.EnumValues) != len(want) || field.EnumValues[0] != want[0] || field.EnumValues[1] != want[1] {
-				t.Errorf("vision_backend enum = %#v, want %#v", field.EnumValues, want)
 			}
 		}
 	}
@@ -104,7 +96,7 @@ func TestLifecycleWithIncompleteConfigKeepsRegistrationMetadata(t *testing.T) {
 	}
 	malformed, err := json.Marshal(lifecycleRequest{
 		SchemaVersion: pluginabi.SchemaVersion,
-		ConfigYAML:    []byte("vision_base_url: [\n"),
+		ConfigYAML:    []byte("vision_model: [\n"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -298,15 +290,6 @@ func TestWriteResponseReportsUnwritableDestination(t *testing.T) {
 }
 
 func TestShutdownSupersedesBlockedConcurrentConfigure(t *testing.T) {
-	oldKey, hadKey := os.LookupEnv("DEEPSEEK_VISION_API_KEY")
-	_ = os.Setenv("DEEPSEEK_VISION_API_KEY", "rpc-fixture-key")
-	defer func() {
-		if hadKey {
-			_ = os.Setenv("DEEPSEEK_VISION_API_KEY", oldKey)
-		} else {
-			_ = os.Unsetenv("DEEPSEEK_VISION_API_KEY")
-		}
-	}()
 	configureLocked := make(chan struct{})
 	shutdownSignaled := make(chan struct{})
 	releaseConfigure := make(chan struct{})
@@ -326,7 +309,10 @@ func TestShutdownSupersedesBlockedConcurrentConfigure(t *testing.T) {
 		shutdownPlugin()
 	}()
 
-	req := []byte(`{"schema_version":2,"config_yaml":"dmlzaW9uX2Jhc2VfdXJsOiBodHRwOi8vMTI3LjAuMC4xOjgzMTcvdjEKdmlzaW9uX21vZGVsOiBjb25jdXJyZW50"}`)
+	req, err := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("vision_model: concurrent")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	configureResult := make(chan error, 1)
 	go func() {
 		_, err := handleMethod("plugin.reconfigure", req)

@@ -10,5 +10,4 @@ plugins:
         repository: example/deepseek-vision
         version: v0.1.0
         managed: true
-      vision_base_url: http://127.0.0.1:8317/v1
       vision_model: store-managed-model

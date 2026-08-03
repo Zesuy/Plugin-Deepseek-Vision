@@ -10,33 +10,43 @@ import (
 func TestParseDefaults(t *testing.T) {
 	cfg, err := ParseYAML(nil)
 	if err != nil {
-		t.Fatalf("ParseYAML(nil): %v", err)
+		t.Fatal(err)
 	}
-	if cfg.VisionBackend != VisionBackendHost || cfg.VisionModel != DefaultVisionModel || cfg.RequestTimeout != 120*time.Second {
+	if cfg.VisionModel != DefaultVisionModel || cfg.Language != DefaultLanguage || cfg.RequestTimeout != 120*time.Second {
 		t.Fatalf("defaults = %#v", cfg)
-	}
-	if cfg.VisionBaseURL != "" {
-		t.Fatalf("default VisionBaseURL must be empty, got %q", cfg.VisionBaseURL)
 	}
 	if len(cfg.TargetModels) != 1 || cfg.TargetModels[0] != "deepseek-v4-flash" {
 		t.Fatalf("target models = %#v", cfg.TargetModels)
 	}
 }
 
-func TestVisionBackendDefaultsAndLegacyExternalInference(t *testing.T) {
-	host, err := ParseYAML([]byte("vision_model: host-vision"))
+func TestDeprecatedHostFieldsAreIgnored(t *testing.T) {
+	cfg, err := ParseYAML([]byte(`
+vision_backend: host
+vision_api_key_env: OLD_KEY
+per_call_timeout_seconds: 1
+retry_max_attempts: 9
+max_concurrency: 32
+cache_size: 99
+cache_ttl_seconds: 5
+vision_model: host-vision
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.VisionBackend != VisionBackendHost || host.VisionBaseURL != "" {
-		t.Fatalf("host config = %#v", host)
+	if cfg.VisionModel != "host-vision" {
+		t.Fatalf("config = %#v", cfg)
 	}
-	external, err := ParseYAML([]byte("vision_base_url: https://vision.example/v1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if external.VisionBackend != VisionBackendExternal {
-		t.Fatalf("legacy external backend = %q", external.VisionBackend)
+}
+
+func TestExternalBackendIsRejected(t *testing.T) {
+	for _, raw := range []string{
+		"vision_backend: external\nvision_base_url: https://vision.example/v1",
+		"vision_base_url: https://vision.example/v1",
+	} {
+		if _, err := ParseYAML([]byte(raw)); err == nil {
+			t.Fatalf("external config accepted: %s", raw)
+		}
 	}
 }
 
@@ -47,15 +57,14 @@ func TestParseHostWrapperIgnoresHostOwnedSwitches(t *testing.T) {
     deepseek-vision:
       enabled: false
       priority: 1
-      vision_base_url: http://127.0.0.1:8317/v1
       vision_model: test-model
-      cache_size: 0
+      max_result_chars: 1000
 `)
 	cfg, err := ParseYAML(raw)
 	if err != nil {
-		t.Fatalf("ParseYAML(wrapper): %v", err)
+		t.Fatal(err)
 	}
-	if cfg.VisionModel != "test-model" || cfg.CacheSize != 0 {
+	if cfg.VisionModel != "test-model" || cfg.MaxResultChars != 1000 {
 		t.Fatalf("config = %#v", cfg)
 	}
 }
@@ -67,65 +76,50 @@ func TestParseStoreManagedWrapperIgnoresHostMetadata(t *testing.T) {
 	}
 	cfg, err := ParseYAML(raw)
 	if err != nil {
-		t.Fatalf("ParseYAML(store wrapper): %v", err)
+		t.Fatal(err)
 	}
 	if cfg.VisionModel != "store-managed-model" {
 		t.Fatalf("vision model = %q", cfg.VisionModel)
 	}
 	if _, err := ParseYAML([]byte("store: {}\nunknown_plugin_field: true")); err == nil {
-		t.Fatal("store metadata caused unknown plugin field to be accepted")
+		t.Fatal("unknown plugin field accepted")
 	}
 }
 
 func TestParseRejectsNonemptyTrailingYAMLDocument(t *testing.T) {
-	if _, err := ParseYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\nvision_model: first\n---\nvision_base_url: http://127.0.0.1:8317/v1\nvision_model: second\n")); err == nil {
-		t.Fatal("nonempty trailing YAML document accepted")
+	if _, err := ParseYAML([]byte("vision_model: first\n---\nvision_model: second\n")); err == nil {
+		t.Fatal("nonempty trailing document accepted")
 	}
-	if _, err := ParseYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\nvision_model: first\n---\n# empty trailing document\n")); err != nil {
-		t.Fatalf("empty trailing YAML document rejected: %v", err)
-	}
-}
-
-func TestTargetModelsAreCanonicalizedBeforePublication(t *testing.T) {
-	cfg, err := ParseYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\ntarget_models: ['  deepseek-v4-flash  ', 'deepseek-v4-pro ']"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"deepseek-v4-flash", "deepseek-v4-pro"}
-	for i := range want {
-		if cfg.TargetModels[i] != want[i] {
-			t.Fatalf("TargetModels = %#v", cfg.TargetModels)
-		}
-	}
-	if _, err := ParseYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\ntarget_models: ['deepseek-v4-flash', ' deepseek-v4-flash ']")); err == nil {
-		t.Fatal("canonical duplicate target model accepted")
+	if _, err := ParseYAML([]byte("vision_model: first\n---\n# empty\n")); err != nil {
+		t.Fatalf("empty trailing document rejected: %v", err)
 	}
 }
 
-func TestVisionBaseURLIsTrimmedAndCanonicalized(t *testing.T) {
-	cfg, err := ParseYAML([]byte("vision_base_url: '  https://vision.example/v1///  '"))
+func TestTargetModelsAreCanonicalized(t *testing.T) {
+	cfg, err := ParseYAML([]byte("target_models: ['  deepseek-v4-flash  ', 'deepseek-v4-pro ']"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.VisionBaseURL != "https://vision.example/v1" {
-		t.Fatalf("VisionBaseURL = %q", cfg.VisionBaseURL)
+	if cfg.TargetModels[0] != "deepseek-v4-flash" || cfg.TargetModels[1] != "deepseek-v4-pro" {
+		t.Fatalf("target models = %#v", cfg.TargetModels)
+	}
+	if _, err := ParseYAML([]byte("target_models: ['deepseek-v4-flash', ' deepseek-v4-flash ']")); err == nil {
+		t.Fatal("duplicate target model accepted")
 	}
 }
 
 func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 	for _, raw := range []string{
 		"unknown_field: true",
-		"max_concurrency: 0",
 		"vision_backend: unknown",
-		"vision_backend: external",
-		"vision_base_url: file:///tmp/x",
-		"vision_base_url: https://vision.example/v1?token=secret",
-		"vision_base_url: https://vision.example/v1#fragment",
-		"vision_base_url: https://vision.example/v1/responses",
-		"vision_base_url: https://vision.example/v1%2Fresponses",
-		"vision_base_url: https://vision.example:bad/v1",
-		"vision_api_key_env: bad-name",
-		"per_call_timeout_seconds: 61\nrequest_timeout_seconds: 60",
+		"vision_model: ''",
+		"language: ''",
+		"request_timeout_seconds: 0",
+		"max_images_per_request: 0",
+		"max_request_bytes: 1",
+		"max_image_reference_bytes: 1",
+		"max_response_bytes: 1",
+		"max_result_chars: 0",
 	} {
 		if _, err := ParseYAML([]byte(raw)); err == nil {
 			t.Errorf("ParseYAML(%q) error = nil", raw)
@@ -134,31 +128,23 @@ func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 }
 
 func TestConfigureIsAtomicOnFailure(t *testing.T) {
-	good, err := ParseYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\nvision_model: first"))
-	if err != nil {
+	if err := ConfigureYAML([]byte("vision_model: first")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigureYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\nvision_model: first")); err != nil {
-		t.Fatal(err)
-	}
-	if err := ConfigureYAML([]byte("vision_api_key_env: not-valid")); err == nil {
+	if err := ConfigureYAML([]byte("vision_model: ''")); err == nil {
 		t.Fatal("invalid reconfigure returned nil")
 	}
-	if got := Snapshot().VisionModel; got != good.VisionModel {
+	if got := Snapshot().VisionModel; got != "first" {
 		t.Fatalf("snapshot changed after failed configure: %q", got)
 	}
 }
 
 func TestShutdownIdempotent(t *testing.T) {
-	if err := ConfigureYAML([]byte("vision_base_url: http://127.0.0.1:8317/v1\nvision_model: before-shutdown")); err != nil {
-		t.Fatal(err)
-	}
 	Shutdown()
 	Shutdown()
 	if Snapshot() != nil {
 		t.Fatal("Snapshot() is non-nil after shutdown")
 	}
-	// Tests in this package share process state; restore defaults for callers.
 	if err := ConfigureYAML([]byte(strings.TrimSpace("{}"))); err != nil {
 		t.Fatal(err)
 	}

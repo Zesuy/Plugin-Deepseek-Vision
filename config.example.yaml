@@ -7,25 +7,14 @@ plugins:
       target_models:
         - deepseek-v4-flash
 
-      # Default: reuse a vision model and credentials already configured in
-      # CLIProxyAPI through the native host.model.execute callback.
-      vision_backend: host
+      # Reuse a vision model and credentials already configured in CLIProxyAPI
+      # through the native host.model.execute callback.
       vision_model: gpt-5.6-luna
 
       language: zh
       request_timeout_seconds: 120
-      per_call_timeout_seconds: 60
-      retry_max_attempts: 3
-      max_concurrency: 4
       max_images_per_request: 4
       max_request_bytes: 20971520
       max_image_reference_bytes: 15728640
       max_response_bytes: 4194304
       max_result_chars: 20000
-      cache_size: 128
-      cache_ttl_seconds: 900
-
-      # Advanced compatibility mode for an independent VLM endpoint:
-      # vision_backend: external
-      # vision_base_url: https://vlm.example.com/v1
-      # vision_api_key_env: DEEPSEEK_VISION_API_KEY

@@ -25,10 +25,8 @@ docker build --file Dockerfile.plugin --target artifact \
   --output type=local,dest=/tmp/deepseek-vision-plugin .
 ```
 
-End-to-end validation should use a mock VLM and mock DeepSeek upstream to assert
-that a failed VLM call results in zero downstream calls. A real VLM check may
-use `gpt-5.6-luna` with a development-only key supplied through the shell; do
-not place that key in fixtures, Docker build arguments, CI or committed files.
-The real gateway check and release acceptance target `deepseek-v4-flash` only.
-`deepseek-v4-pro` remains a future-supported configuration target and is not
-required or probed while its Responses endpoint is unavailable.
+End-to-end validation uses a real CLIProxyAPI process with mock providers to
+assert that `host.model.execute` performs routing, credentials, protocol
+translation, and self-skip without recursion, and that a failed VLM call
+results in zero downstream calls. No plugin key is required. Release acceptance
+targets `deepseek-v4-flash`; `deepseek-v4-pro` remains future-supported only.

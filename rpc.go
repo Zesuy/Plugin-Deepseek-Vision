@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,11 +139,6 @@ func configure(_ string, raw []byte) error {
 	if cfg == nil {
 		return nil
 	}
-	if cfg.VisionBackend == config.VisionBackendExternal && strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv)) == "" {
-		rememberUnavailableTargets(cfg.TargetModels)
-		return nil
-	}
-
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	runLifecycleTestHook("configure_locked")
@@ -194,7 +188,6 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "vision_backend", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"host", "external"}, Description: "视觉调用方式：host 复用 CLIProxyAPI 已配置的模型与凭证；external 使用高级 YAML 中的独立 endpoint。默认值 / Default: host."},
 				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
 				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},
 			},

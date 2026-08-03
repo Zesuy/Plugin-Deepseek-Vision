@@ -1,23 +1,17 @@
 // Package interceptor implements the fail-closed AfterAuth request pipeline.
-// It owns the VLM service lifetime while keeping the ABI and plugin wiring in
-// the root package deliberately small.
 package interceptor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
-	"github.com/zesuy/Plugin-Deepseek-Vision/internal/preprocess"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/safety"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
@@ -25,159 +19,54 @@ var ErrRuntimeUnavailable = errors.New("vision interceptor runtime is unavailabl
 
 const HostCallbackIDMetadataKey = "__deepseek_vision_host_callback_id"
 
-// ServiceFactory constructs a service for one immutable configuration
-// generation. The factory is called lazily, only after a request has passed
-// the gate and contains at least one supported image.
-type ServiceFactory func(*config.Config, uint64, preprocess.Limiter) (*preprocess.Service, error)
+// AnalyzerFactory constructs the thin host-model adapter for one immutable
+// configuration snapshot. It is initialized lazily only for eligible images.
+type AnalyzerFactory func(*config.Config) (vision.Analyzer, error)
 
-type serviceEntry struct {
-	cfg         *config.Config
-	generation  uint64
-	fingerprint string
-	factory     ServiceFactory
-	limiter     preprocess.Limiter
-
-	mu      sync.Mutex
-	initMu  sync.Mutex
-	service *preprocess.Service
-	active  int
-	retired bool
-	closed  bool
+type runtimeState struct {
+	cfg      *config.Config
+	factory  AnalyzerFactory
+	once     sync.Once
+	analyzer vision.Analyzer
+	err      error
 }
 
-func (e *serviceEntry) getService() (*preprocess.Service, error) {
-	e.initMu.Lock()
-	defer e.initMu.Unlock()
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
+func (s *runtimeState) getAnalyzer() (vision.Analyzer, error) {
+	if s == nil || s.factory == nil {
 		return nil, ErrRuntimeUnavailable
 	}
-	if e.service != nil {
-		s := e.service
-		e.mu.Unlock()
-		return s, nil
-	}
-	e.mu.Unlock()
-
-	service, err := e.factory(e.cfg, e.generation, e.limiter)
-	if err != nil {
-		return nil, err
-	}
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
-		closeService(service)
-		return nil, ErrRuntimeUnavailable
-	}
-	if e.service == nil {
-		e.service = service
-		service = nil
-	}
-	result := e.service
-	e.mu.Unlock()
-	if service != nil {
-		closeService(service)
-	}
-	return result, nil
-}
-
-func (e *serviceEntry) release() {
-	var service *preprocess.Service
-	e.mu.Lock()
-	if e.active > 0 {
-		e.active--
-	}
-	if e.retired && e.active == 0 && !e.closed {
-		e.closed = true
-		service = e.service
-		e.service = nil
-	}
-	e.mu.Unlock()
-	if service != nil {
-		closeService(service)
-	}
-}
-
-func (e *serviceEntry) retire() {
-	var service *preprocess.Service
-	e.mu.Lock()
-	e.retired = true
-	if e.active == 0 && !e.closed {
-		e.closed = true
-		service = e.service
-		e.service = nil
-	}
-	e.mu.Unlock()
-	if service != nil {
-		closeService(service)
-	}
-}
-
-// Lease pins one configuration generation until Release. Reconfiguration
-// retires the old entry, but an in-flight request may finish using its pinned
-// immutable snapshot and service.
-type Lease struct {
-	entry *serviceEntry
-	once  sync.Once
-}
-
-func (l *Lease) Config() *config.Config {
-	if l == nil || l.entry == nil {
-		return nil
-	}
-	return l.entry.cfg
-}
-
-func (l *Lease) Service() (*preprocess.Service, error) {
-	if l == nil || l.entry == nil {
-		return nil, ErrRuntimeUnavailable
-	}
-	return l.entry.getService()
-}
-
-func (l *Lease) Release() {
-	if l == nil || l.entry == nil {
-		return
-	}
-	l.once.Do(l.entry.release)
-}
-
-func closeService(service *preprocess.Service) {
-	if service == nil {
-		return
-	}
-	service.ClearCache()
-	_ = service.Close()
+	s.once.Do(func() {
+		s.analyzer, s.err = s.factory(s.cfg)
+		if s.analyzer == nil && s.err == nil {
+			s.err = ErrRuntimeUnavailable
+		}
+	})
+	return s.analyzer, s.err
 }
 
 // Runtime manages immutable generations and implements the plugin handler.
 type Runtime struct {
 	mu      sync.Mutex
-	current *serviceEntry
-	factory ServiceFactory
-	limiter *dynamicLimiter
+	current *runtimeState
+	factory AnalyzerFactory
 	// targetModels is retained across shutdown so the unavailable fallback can
 	// preserve the same model gate. Without this snapshot, a shutdown would
 	// conservatively reject image requests for every Responses model instead of
 	// only the configured DeepSeek targets.
 	targetModels []string
-	generation   uint64
 	shutdown     bool
 }
 
-func NewRuntime(factory ServiceFactory) *Runtime {
+func NewRuntime(factory AnalyzerFactory) *Runtime {
 	defaults := config.Default()
 	return &Runtime{
 		factory:      factory,
-		limiter:      newDynamicLimiter(),
 		targetModels: append([]string(nil), defaults.TargetModels...),
 	}
 }
 
-// Reconfigure publishes a new generation. Every explicit reconfigure retires
-// the previous generation (even when values are unchanged), which guarantees
-// cache invalidation and fresh environment-token resolution.
+// Reconfigure atomically publishes a new immutable snapshot. In-flight calls
+// retain their previous state through ordinary Go references.
 func (r *Runtime) Reconfigure(cfg *config.Config) {
 	if r == nil {
 		return
@@ -186,39 +75,25 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 		r.Shutdown()
 		return
 	}
-	fp := fingerprint(cfg)
 	r.mu.Lock()
-	r.limiter.configure(cfg.MaxConcurrency)
-	r.generation++
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
-	entry := &serviceEntry{cfg: cfg, generation: r.generation, fingerprint: fp, factory: r.factory, limiter: r.limiter}
-	old := r.current
-	r.current = entry
+	r.current = &runtimeState{cfg: cfg, factory: r.factory}
 	r.shutdown = false
 	r.mu.Unlock()
-	if old != nil {
-		old.retire()
-	}
 }
 
-// Shutdown is idempotent and prevents new leases. The active generation is
-// retired and its service is closed after any in-flight request releases it.
+// Shutdown is idempotent and prevents new requests from acquiring a state.
 func (r *Runtime) Shutdown() {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	old := r.current
 	r.current = nil
 	r.shutdown = true
-	r.limiter.shutdown()
 	r.mu.Unlock()
-	if old != nil {
-		old.retire()
-	}
 }
 
-func (r *Runtime) acquire() (*Lease, error) {
+func (r *Runtime) acquire() (*runtimeState, error) {
 	if r == nil {
 		return nil, ErrRuntimeUnavailable
 	}
@@ -227,17 +102,9 @@ func (r *Runtime) acquire() (*Lease, error) {
 		r.mu.Unlock()
 		return nil, ErrRuntimeUnavailable
 	}
-	e := r.current
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
-		r.mu.Unlock()
-		return nil, ErrRuntimeUnavailable
-	}
-	e.active++
-	e.mu.Unlock()
+	state := r.current
 	r.mu.Unlock()
-	return &Lease{entry: e}, nil
+	return state, nil
 }
 
 // Handle is intentionally fail-closed: it always returns a concrete response
@@ -252,20 +119,19 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		err = nil
 	}()
 
-	lease, acquireErr := r.acquire()
+	state, acquireErr := r.acquire()
 	if acquireErr != nil {
 		// Once a request has reached the image-interception seam, an unavailable
 		// generation must not send the original image downstream. The host may
 		// treat callback errors as pass-through, so return a concrete 502 for
 		// targeted image-shaped Responses requests and retain passthrough for
-		// unrelated models or requests that contain no image candidate.
+		// unrelated models and requests without image candidates.
 		if unavailableImageRequest(req, r.targetModelSnapshot()) {
 			return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
 		}
 		return resp, nil
 	}
-	defer lease.Release()
-	cfg := lease.Config()
+	cfg := state.cfg
 	if !eligible(req, cfg) {
 		return resp, nil
 	}
@@ -292,8 +158,8 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return resp, nil
 	}
 
-	service, serviceErr := lease.Service()
-	if serviceErr != nil {
+	analyzer, analyzerErr := state.getAnalyzer()
+	if analyzerErr != nil {
 		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
 	}
 	images := plan.Images()
@@ -306,7 +172,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, analyzeErr := service.AnalyzeOne(ctx, preprocess.Image{Reference: images[i].Reference}, images[i].FocusHint)
+			result, analyzeErr := safeAnalyze(ctx, analyzer, images[i].Reference, images[i].FocusHint, cfg.MaxResultChars)
 			if analyzeErr != nil {
 				errMu.Lock()
 				if firstErr == nil {
@@ -331,6 +197,23 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return terminateForError(rewriteErr), nil
 	}
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
+}
+
+func safeAnalyze(ctx context.Context, analyzer vision.Analyzer, reference, focusHint string, maxResultChars int) (result string, err error) {
+	defer func() {
+		if recover() != nil {
+			result = ""
+			err = errors.New("visual analyzer failed")
+		}
+	}()
+	result, err = analyzer.Analyze(ctx, reference, focusHint)
+	if err != nil {
+		return "", err
+	}
+	if err := (safety.Limits{MaxResultChars: maxResultChars}).ValidateResult(result); err != nil {
+		return "", err
+	}
+	return result, nil
 }
 
 func (r *Runtime) targetModelSnapshot() []string {
@@ -422,11 +305,4 @@ func terminate(status int, typ, message string) pluginapi.RequestInterceptRespon
 		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}},
 		ResponseBody:    body,
 	}
-}
-
-func fingerprint(cfg *config.Config) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00", cfg.VisionBackend, cfg.VisionBaseURL, cfg.VisionModel, cfg.VisionAPIKeyEnv, vision.NormalizeLanguage(cfg.Language), strings.Join(cfg.TargetModels, "\x00"), cfg.RequestTimeout, cfg.PerCallTimeout, cfg.RetryMaxAttempts, cfg.MaxConcurrency, cfg.MaxImagesPerRequest, cfg.MaxRequestBytes, cfg.MaxImageReferenceBytes, cfg.MaxResponseBytes, cfg.MaxResultChars, cfg.CacheSize)
-	fmt.Fprintf(h, "%d", cfg.CacheTTL)
-	return hex.EncodeToString(h.Sum(nil))
 }

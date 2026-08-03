@@ -90,11 +90,9 @@ required or probed service in this release.
 
 ## HTTP 502 from image requests
 
-In host mode, check that `vision_model` exists in CLIProxyAPI and accepts image
-input through OpenAI Responses. In external mode, check that the key environment
-variable is present inside the process/container and that `vision_base_url` is
-reachable. The external client appends `/responses`. Provider errors, malformed
-VLM JSON, response-size limits and exhausted retries are intentional failures.
+Check that `vision_model` exists in CLIProxyAPI and accepts image input through
+OpenAI Responses. Provider errors, malformed VLM JSON, response-size limits and
+exhausted host retries are intentional failures.
 The error returned to the client is redacted; inspect only service-side status
 metrics, never enable logging of request bodies or Authorization headers. For
 eligible Responses image requests, plugin failures are terminal (typically
@@ -109,7 +107,6 @@ plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
 
 ## Slow or rejected requests
 
-Reduce `max_images_per_request` or increase the bounded timeouts only after
+Reduce `max_images_per_request` or increase the bounded total timeout only after
 checking VLM latency. A 413 indicates a configured body/reference/ABI limit;
-429/5xx responses are retried only within the total deadline. Caches are
-process-local and are cleared after reconfigure or shutdown.
+provider retry behavior is controlled by CLIProxyAPI.

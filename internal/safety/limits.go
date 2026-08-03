@@ -45,8 +45,8 @@ func (l Limits) ValidateImageReference(ref string) error {
 }
 
 // ValidateImageReference validates the complete external image reference and
-// applies an optional byte limit. It is the shared validator for discovery,
-// preprocessing and the final HTTP client boundary.
+// applies an optional byte limit. It is the shared validator for discovery and
+// the final host-model callback boundary.
 func ValidateImageReference(ref string, maxBytes int) error {
 	if strings.TrimSpace(ref) == "" {
 		return ErrEmptyImageReference
