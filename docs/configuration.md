@@ -20,6 +20,7 @@ an invalid update leaves the previous snapshot active.
 | `analysis_cache_size` | Maximum derived-text cache entries; `0` disables | 128 |
 | `analysis_cache_ttl_seconds` | Data-URI analysis TTL | 900 |
 | `analysis_url_cache_ttl_seconds` | URL-image analysis TTL | 120 |
+| `trace_enabled` | Full plaintext debug trace | `false` |
 
 The native ABI applies an additional process-wide admission budget of 32 MiB of
 raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
@@ -38,9 +39,34 @@ nested execution skips this plugin's own interceptor, so it does not recurse.
 No additional VLM endpoint or key is supported or required. CLIProxyAPI also
 owns provider protocol translation, transport, retry, and credential policy.
 
-The CPAMC form exposes `vision_model`, `language`, and the three cache controls.
-Their descriptions include bilingual defaults. Advanced gating, timeout, and
-size controls remain available through YAML.
+The CPAMC form exposes `vision_model`, `language`, the three cache controls, and
+a boolean `trace_enabled` switch. Their descriptions include bilingual
+defaults. Advanced gating, timeout, and size controls remain available through
+YAML.
+
+## Full-context debug trace
+
+`trace_enabled: true` creates `logs/deepseek-vision-trace/events.jsonl` and one
+request bundle below `logs/deepseek-vision-trace/requests/`. In the Docker
+example this is the host-mounted `./logs/deepseek-vision-trace/` directory.
+Each bundle preserves the exact inbound multi-turn body, complete image URLs or
+data URIs, discovered image positions and focus hints, cache/deduplication plan,
+every VLM request and response, parsed VLM result, rewritten request body, and
+the final interceptor result. The event stream references the bundle and uses
+the host-provided request/trace IDs.
+
+This mode is intentionally high sensitivity. Treat the directory as a complete
+copy of user conversations and image data. Authorization, API-key, token,
+secret, credential, and cookie header/metadata fields are always replaced with
+`[REDACTED]`; image URLs and data URIs are not redacted. Files use mode `0600`,
+directories use `0700`, request bundles are capped at 1 GiB by deleting the
+oldest complete inactive bundle, and the event stream rotates at 64 MiB with
+three backups. Disable the switch immediately after diagnosis. Disabling does
+not delete existing traces.
+
+Trace open/write/rotation failures never reject configuration or change a
+request result. The plugin disables tracing and emits one ordinary host warning
+for the failed generation.
 
 All deprecated fields from earlier builds, including `vision_backend`,
 `vision_base_url`, `vision_api_key_env`, retry, concurrency, and cache fields,

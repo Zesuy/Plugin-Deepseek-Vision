@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 )
 
 var (
@@ -74,6 +77,16 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 	if err := context.Cause(ctx); err != nil {
 		return "", err
 	}
+	session := tracelog.FromContext(ctx)
+	job := tracelog.JobFromContext(ctx)
+	prefix := fmt.Sprintf("40-vlm-job-%03d", job.ID)
+	if session != nil {
+		session.JSON(prefix+"-metadata.json", map[string]any{
+			"job_id": job.ID, "image_numbers": job.ImageNumbers,
+			"image_reference": imageReference, "reference_bytes": len(imageReference),
+			"focus_hint": focusHint, "vision_model": c.opts.Model, "language": c.opts.Language,
+		})
+	}
 	payload := requestPayload{
 		Model: c.opts.Model,
 		Input: []requestInput{{Role: "user", Content: []requestContent{
@@ -87,26 +100,80 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 	if err != nil {
 		return "", err
 	}
-	response, err := c.opts.Execute(ctx, pluginapi.HostModelExecutionRequest{
+	started := time.Now()
+	if session != nil {
+		session.Artifact(prefix+"-request.json", body)
+		session.Event("vlm_call_started", map[string]any{
+			"job_id": job.ID, "image_numbers": job.ImageNumbers,
+			"request_bytes": len(body), "reference_bytes": len(imageReference),
+		})
+	}
+	hostRequest := pluginapi.HostModelExecutionRequest{
 		EntryProtocol: "openai-response",
 		ExitProtocol:  "openai-response",
 		Model:         c.opts.Model,
 		Stream:        false,
 		Body:          body,
 		Headers:       http.Header{"Content-Type": []string{"application/json"}},
-	}, HostCallbackID(ctx))
+	}
+	if session != nil {
+		session.JSON(prefix+"-request-metadata.json", map[string]any{
+			"entry_protocol": hostRequest.EntryProtocol, "exit_protocol": hostRequest.ExitProtocol,
+			"model": hostRequest.Model, "stream": hostRequest.Stream,
+			"headers": tracelog.RedactHeaders(hostRequest.Headers), "query": tracelog.RedactValues(hostRequest.Query), "alt": hostRequest.Alt,
+		})
+	}
+	response, err := c.opts.Execute(ctx, hostRequest, HostCallbackID(ctx))
 	if err != nil {
+		if session != nil {
+			session.Event("vlm_call_finished", map[string]any{
+				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"outcome": "executor_error", "error": err.Error(),
+			})
+		}
 		return "", ErrHostExecutorUnavailable
 	}
+	if session != nil {
+		session.Artifact(prefix+"-response.json", response.Body)
+		session.JSON(prefix+"-response-metadata.json", map[string]any{
+			"status_code": response.StatusCode, "headers": tracelog.RedactHeaders(response.Headers),
+			"body_bytes": len(response.Body), "duration_ms": time.Since(started).Milliseconds(),
+		})
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if session != nil {
+			session.Event("vlm_call_finished", map[string]any{
+				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"outcome": "http_error", "status_code": response.StatusCode,
+			})
+		}
 		return "", errors.New("host model execution failed")
 	}
 	if int64(len(response.Body)) > c.opts.MaxResponseBytes {
+		if session != nil {
+			session.Event("vlm_call_finished", map[string]any{
+				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"outcome": "response_too_large", "response_bytes": len(response.Body),
+			})
+		}
 		return "", ErrResponseTooLarge
 	}
 	text, err := parseText(response.Body)
 	if err != nil {
+		if session != nil {
+			session.Event("vlm_call_finished", map[string]any{
+				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"outcome": "parse_error", "error": err.Error(),
+			})
+		}
 		return "", err
+	}
+	if session != nil {
+		session.Artifact(prefix+"-parsed-result.txt", []byte(text))
+		session.Event("vlm_call_finished", map[string]any{
+			"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+			"outcome": "success", "response_bytes": len(response.Body), "result_chars": len([]rune(text)),
+		})
 	}
 	return text, nil
 }

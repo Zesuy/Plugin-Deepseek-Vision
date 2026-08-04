@@ -23,3 +23,8 @@ plugins:
       analysis_cache_size: 128
       analysis_cache_ttl_seconds: 900
       analysis_url_cache_ttl_seconds: 120
+
+      # High-sensitivity debugging only. Writes complete plaintext request,
+      # image references/data URIs, VLM payloads/results, and rewritten bodies to
+      # logs/deepseek-vision-trace/. Credential headers remain redacted.
+      trace_enabled: false

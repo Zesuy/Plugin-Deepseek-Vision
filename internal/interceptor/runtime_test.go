@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
@@ -163,7 +166,7 @@ func TestHandleTracesExactConfiguredLimitWithoutContent(t *testing.T) {
 	if err := json.Unmarshal(resp.ResponseBody, &public); err != nil {
 		t.Fatal(err)
 	}
-	if public.Error.Message != "request body exceeds configured limit" {
+	if public.Error.Message != "request body exceeds configured limit: found 1048577 bytes, limit 1048576" {
 		t.Fatalf("public message = %q", public.Error.Message)
 	}
 	if got.callbackID != "callback-123" || got.level != "warn" || got.message == "" {
@@ -187,7 +190,7 @@ func TestPublicLimitMessagesAreSpecific(t *testing.T) {
 		responses.LimitVLMResult:      "vision result exceeds configured limit",
 	}
 	for limit, want := range tests {
-		if got := publicLimitMessage(limit); got != want {
+		if got := publicLimitMessage(limit, 0, 0); got != want {
 			t.Errorf("publicLimitMessage(%q) = %q, want %q", limit, got, want)
 		}
 	}
@@ -207,6 +210,90 @@ func TestDiagnosticPanicCannotChangeLimitResponse(t *testing.T) {
 	resp, err := r.Handle(req)
 	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("response changed after diagnostic panic: %#v, err=%v", resp, err)
+	}
+}
+
+func TestFullContextTraceExplainsMultiTurnImageCount(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "deepseek-vision-trace")
+	sink := tracelog.New(tracelog.Options{Root: root, MaxTotalBytes: 1 << 20, MaxEventBytes: 1 << 20})
+	sink.Configure(true)
+	defer sink.Close()
+
+	analyzer := &testAnalyzer{}
+	r := NewRuntimeWithTrace(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil }, sink)
+	cfg := testConfig(t)
+	cfg.TraceEnabled = true
+	r.Reconfigure(cfg)
+	defer r.Shutdown()
+
+	body := `{"input":[` +
+		`{"role":"user","content":[{"type":"input_text","text":"SECRET MULTI-TURN CONTEXT"},{"type":"input_image","image_url":"https://example.com/repeated.png"},{"type":"input_image","image_url":"https://example.com/history.png"}]},` +
+		`{"role":"user","content":[{"type":"input_text","text":"latest turn"},{"type":"input_image","image_url":"https://example.com/repeated.png"},{"type":"input_image","image_url":"https://example.com/current-a.png"},{"type":"input_image","image_url":"https://example.com/current-b.png"}]}` +
+		`]}`
+	req := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
+	req.RequestID = "request-trace-1"
+	req.TraceID = "trace-1"
+	req.Headers.Set("Authorization", "Bearer sk-secret")
+	req.Metadata["api_key"] = "metadata-secret"
+	req.Metadata[HostCallbackIDMetadataKey] = "callback-secret"
+	resp, err := r.Handle(req)
+	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("response=%#v err=%v", resp, err)
+	}
+	if !strings.Contains(string(resp.ResponseBody), "found 5 image blocks, limit 4") {
+		t.Fatalf("response body = %s", resp.ResponseBody)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "requests"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("trace bundles=%v err=%v", entries, err)
+	}
+	bundle := filepath.Join(root, "requests", entries[0].Name())
+	inbound, err := os.ReadFile(filepath.Join(bundle, "10-inbound-body.json"))
+	if err != nil || string(inbound) != body || !strings.Contains(string(inbound), "SECRET MULTI-TURN CONTEXT") {
+		t.Fatalf("inbound trace missing full context: err=%v body=%s", err, inbound)
+	}
+	metadata, err := os.ReadFile(filepath.Join(bundle, "00-metadata.json"))
+	if err != nil || strings.Contains(string(metadata), "sk-secret") || strings.Contains(string(metadata), "metadata-secret") || strings.Contains(string(metadata), "callback-secret") || !strings.Contains(string(metadata), "[REDACTED]") {
+		t.Fatalf("metadata redaction failed: err=%v metadata=%s", err, metadata)
+	}
+	discovery, err := os.ReadFile(filepath.Join(bundle, "20-discovery-error.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"image_blocks": 5`, `"unique_image_references": 4`, `"duplicate_image_blocks": 1`, `"last_image_item_blocks": 3`, `"earlier_image_blocks": 2`, `https://example.com/repeated.png`} {
+		if !strings.Contains(string(discovery), want) {
+			t.Fatalf("discovery trace missing %s: %s", want, discovery)
+		}
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.refs)
+	analyzer.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("VLM was called %d times after discovery rejection", calls)
+	}
+}
+
+func TestTraceFilesystemFailureCannotChangeRequest(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "occupied")
+	if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sink := tracelog.New(tracelog.Options{Root: root})
+	sink.Configure(true)
+	if sink.Enabled() {
+		t.Fatal("invalid trace sink unexpectedly enabled")
+	}
+	analyzer := &testAnalyzer{}
+	r := NewRuntimeWithTrace(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil }, sink)
+	cfg := testConfig(t)
+	cfg.TraceEnabled = true
+	r.Reconfigure(cfg)
+	defer r.Shutdown()
+	body := `{"input":[{"role":"user","content":[{"type":"input_text","text":"continue without trace"},{"type":"input_image","image_url":"https://example.com/a.png"}]}]}`
+	resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body))
+	if err != nil || resp.Terminate || strings.Contains(string(resp.Body), "input_image") {
+		t.Fatalf("trace failure changed response=%#v err=%v", resp, err)
 	}
 }
 

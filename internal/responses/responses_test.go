@@ -215,6 +215,24 @@ func TestLimitErrorsExposeSafeMeasurements(t *testing.T) {
 	}
 }
 
+func TestImageCountErrorBreaksDownMultiTurnAndDuplicates(t *testing.T) {
+	body := []byte(`{"input":[` +
+		`{"role":"user","content":[{"type":"input_image","image_url":"https://e/repeated"},{"type":"input_image","image_url":"https://e/history"}]},` +
+		`{"role":"user","content":[{"type":"input_image","image_url":"https://e/repeated"},{"type":"input_image","image_url":"https://e/current-a"},{"type":"input_image","image_url":"https://e/current-b"}]}` +
+		`]}`)
+	_, err := Discover(body, Options{MaxImages: 4})
+	var plannerErr *Error
+	if !errors.As(err, &plannerErr) || plannerErr.ImageCount == nil {
+		t.Fatalf("error = %#v", err)
+	}
+	details := plannerErr.ImageCount
+	if details.ImageBlocks != 5 || details.UniqueImageReferences != 4 || details.DuplicateImageBlocks != 1 ||
+		details.ImageInputItems != 2 || details.LastImageItemIndex != 1 || details.LastImageItemBlocks != 3 || details.EarlierImageBlocks != 2 ||
+		details.ContentImages != 5 || details.FunctionOutputImages != 0 {
+		t.Fatalf("image count details = %#v", details)
+	}
+}
+
 func TestDiscoverAcceptsDataImageCaseAndParameters(t *testing.T) {
 	body := []byte(`{"input":[{"content":[{"type":"input_image","image_url":"DATA:IMAGE/PNG;charset=utf-8;BASE64,QUJDRA=="}]}]}`)
 	plan, err := Discover(body)

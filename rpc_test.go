@@ -32,8 +32,8 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
 	}
-	if len(result.Metadata.ConfigFields) != 5 {
-		t.Fatalf("config field count = %d, want 5 fields", len(result.Metadata.ConfigFields))
+	if len(result.Metadata.ConfigFields) != 6 {
+		t.Fatalf("config field count = %d, want 6 fields", len(result.Metadata.ConfigFields))
 	}
 	wantFields := map[string]pluginapi.ConfigFieldType{
 		"vision_model":                   pluginapi.ConfigFieldTypeString,
@@ -41,6 +41,7 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 		"analysis_cache_size":            pluginapi.ConfigFieldTypeInteger,
 		"analysis_cache_ttl_seconds":     pluginapi.ConfigFieldTypeInteger,
 		"analysis_url_cache_ttl_seconds": pluginapi.ConfigFieldTypeInteger,
+		"trace_enabled":                  pluginapi.ConfigFieldTypeBoolean,
 	}
 	for _, field := range result.Metadata.ConfigFields {
 		if field.Description == "" {

@@ -59,9 +59,12 @@ func (o Options) normalized() Options {
 // VLM client, while FocusHint contains nearby user text with the configured
 // hard cap applied.
 type Image struct {
-	Number    int
-	Reference string
-	FocusHint string
+	Number     int    `json:"number"`
+	Reference  string `json:"reference"`
+	FocusHint  string `json:"focus_hint"`
+	InputIndex int    `json:"input_index"`
+	BlockIndex int    `json:"block_index"`
+	Source     string `json:"source"`
 
 	location imageLocation
 }
@@ -102,10 +105,11 @@ type ImageResult struct {
 // Plan is an immutable discovery result. A Plan may be rewritten repeatedly;
 // each call works on a fresh JSON tree and never mutates the original body.
 type Plan struct {
-	original []byte
-	root     any
-	images   []Image
-	options  Options
+	original   []byte
+	root       any
+	images     []Image
+	options    Options
+	inputItems int
 }
 
 // Discover parses a Responses request body and records every supported image
@@ -149,6 +153,7 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 	if !ok {
 		return nil, malformed("input must be a string or array", "input")
 	}
+	plan.inputItems = len(items)
 
 	var candidates []focusCandidate
 	var pending []pendingImage
@@ -217,12 +222,15 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 			}
 		}
 	}
+	for i := range pending {
+		pending[i].FocusHint = chooseFocus(pending[i].location, candidates, opt.MaxFocusChars)
+	}
 	if len(pending) > opt.MaxImages {
-		return nil, limitExceeded(LimitImageCount, len(pending), opt.MaxImages, "request contains too many images", "input")
+		debugImages := pendingImageValues(pending)
+		return nil, imageCountExceeded(len(pending), opt.MaxImages, summarizeImages(debugImages, len(items)), debugImages)
 	}
 
 	for i := range pending {
-		pending[i].FocusHint = chooseFocus(pending[i].location, candidates, opt.MaxFocusChars)
 		plan.images = append(plan.images, pending[i].Image)
 	}
 	return plan, nil
@@ -230,6 +238,44 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 
 type pendingImage struct {
 	Image
+}
+
+func pendingImageValues(images []pendingImage) []Image {
+	values := make([]Image, len(images))
+	for i := range images {
+		values[i] = images[i].Image
+	}
+	return values
+}
+
+func summarizeImages(images []Image, inputItems int) ImageCountDetails {
+	details := ImageCountDetails{InputItems: inputItems, ImageBlocks: len(images), LastImageItemIndex: -1}
+	inputIndexes := make(map[int]struct{})
+	references := make(map[string]struct{})
+	for i := range images {
+		image := images[i]
+		inputIndexes[image.InputIndex] = struct{}{}
+		references[image.Reference] = struct{}{}
+		if image.InputIndex > details.LastImageItemIndex {
+			details.LastImageItemIndex = image.InputIndex
+		}
+		switch image.Source {
+		case "content":
+			details.ContentImages++
+		case "function_call_output":
+			details.FunctionOutputImages++
+		}
+	}
+	for i := range images {
+		if images[i].InputIndex == details.LastImageItemIndex {
+			details.LastImageItemBlocks++
+		}
+	}
+	details.ImageInputItems = len(inputIndexes)
+	details.UniqueImageReferences = len(references)
+	details.DuplicateImageBlocks = details.ImageBlocks - details.UniqueImageReferences
+	details.EarlierImageBlocks = details.ImageBlocks - details.LastImageItemBlocks
+	return details
 }
 
 type focusCandidate struct {
@@ -283,7 +329,11 @@ func discoverImage(block map[string]any, location imageLocation, number int, opt
 			// stable public 422 contract; never include the source reference.
 			return pendingImage{}, unsupported("image reference must be a valid HTTP(S) URL or data:image URI", locationPath(location))
 		}
-		return pendingImage{Image: Image{Number: number, Reference: reference, location: location}}, nil
+		return pendingImage{Image: Image{
+			Number: number, Reference: reference,
+			InputIndex: location.input, BlockIndex: location.block, Source: locationSource(location.kind),
+			location: location,
+		}}, nil
 	}
 	if _, hasFileID := block["file_id"]; hasFileID {
 		return pendingImage{}, unsupported("file_id image references are not supported", locationPath(location))
@@ -328,6 +378,27 @@ func locationPath(location imageLocation) string {
 		return fmt.Sprintf("input[%d].output[%d]", location.input, location.block)
 	}
 	return fmt.Sprintf("input[%d].content[%d]", location.input, location.block)
+}
+
+func locationSource(kind locationKind) string {
+	if kind == locationFunctionOutput {
+		return "function_call_output"
+	}
+	return "content"
+}
+
+func (p *Plan) InputItemCount() int {
+	if p == nil {
+		return 0
+	}
+	return p.inputItems
+}
+
+func (p *Plan) ImageCountDetails() ImageCountDetails {
+	if p == nil {
+		return ImageCountDetails{LastImageItemIndex: -1}
+	}
+	return summarizeImages(p.images, p.inputItems)
 }
 
 // Images returns a copy of the discovered image metadata. The returned slice

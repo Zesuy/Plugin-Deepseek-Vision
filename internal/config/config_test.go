@@ -18,8 +18,22 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.AnalysisCacheSize != 128 || cfg.AnalysisCacheTTL != 15*time.Minute || cfg.URLAnalysisCacheTTL != 2*time.Minute {
 		t.Fatalf("cache defaults = %#v", cfg)
 	}
+	if cfg.TraceEnabled {
+		t.Fatal("full-context trace must default to disabled")
+	}
 	if len(cfg.TargetModels) != 1 || cfg.TargetModels[0] != "deepseek-v4-flash" {
 		t.Fatalf("target models = %#v", cfg.TargetModels)
+	}
+}
+
+func TestTraceConfiguration(t *testing.T) {
+	enabled, err := ParseYAML([]byte("trace_enabled: true"))
+	if err != nil || !enabled.TraceEnabled {
+		t.Fatalf("enabled trace = %#v, err=%v", enabled, err)
+	}
+	disabled, err := ParseYAML([]byte("trace_enabled: false"))
+	if err != nil || disabled.TraceEnabled {
+		t.Fatalf("disabled trace = %#v, err=%v", disabled, err)
 	}
 }
 

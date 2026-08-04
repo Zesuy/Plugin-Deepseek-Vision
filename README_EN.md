@@ -125,6 +125,12 @@ release assets.
 - Every 413 emits one content-free warning through the host's `host.log`, tied
   to the request ID when available. It records only the limit kind, actual and
   maximum values, active size settings, and configuration generation.
+- For difficult multi-turn diagnosis, `trace_enabled: true` writes a plaintext
+  event index and per-request bundle under `logs/deepseek-vision-trace/`. It
+  includes the exact inbound body, image URLs/data URIs, focus hints, cache
+  plan, VLM requests/responses, and rewritten body. Credential headers and
+  metadata are still redacted. Treat this directory as a full copy of user
+  data and enable it only temporarily.
 - If the runtime is unavailable before normal discovery can run, a targeted
   Responses request with malformed or image-shaped input is conservatively
   terminated with 502; unrelated models still pass through.

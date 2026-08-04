@@ -38,3 +38,13 @@ Configured-limit and ABI-admission rejections emit a structured warning through
 the host logger. Diagnostics are intentionally restricted to limit names,
 integer sizes/counts, active limit values and configuration generation; image
 references, request bodies, headers and credentials are never included.
+
+## Opt-in plaintext trace
+
+`trace_enabled` deliberately changes the privacy boundary for debugging. It
+writes complete conversation bodies, image URLs/data URIs, focus hints, VLM
+requests/responses, and rewritten bodies beneath
+`logs/deepseek-vision-trace/`. Credential-like header and metadata fields are
+still forcibly redacted, but image URLs may themselves contain signed query
+parameters. Protect the mounted logs directory, enable the switch only for a
+bounded reproduction, and securely remove retained bundles afterward.

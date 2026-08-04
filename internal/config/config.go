@@ -46,6 +46,7 @@ type Config struct {
 	AnalysisCacheSize      int
 	AnalysisCacheTTL       time.Duration
 	URLAnalysisCacheTTL    time.Duration
+	TraceEnabled           bool
 }
 
 // rawConfig mirrors the active YAML contract. Deprecated fields remain
@@ -68,6 +69,7 @@ type rawConfig struct {
 	AnalysisCacheSize      int      `yaml:"analysis_cache_size"`
 	AnalysisCacheTTL       int      `yaml:"analysis_cache_ttl_seconds"`
 	URLAnalysisCacheTTL    int      `yaml:"analysis_url_cache_ttl_seconds"`
+	TraceEnabled           bool     `yaml:"trace_enabled"`
 
 	// Deprecated host-client fields, accepted and unconditionally ignored.
 	VisionBackend         yaml.Node `yaml:"vision_backend"`
@@ -270,6 +272,9 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	if raw.URLAnalysisCacheTTL != 0 || present["analysis_url_cache_ttl_seconds"] {
 		cfg.URLAnalysisCacheTTL = raw.URLAnalysisCacheTTL
 	}
+	if present["trace_enabled"] {
+		cfg.TraceEnabled = raw.TraceEnabled
+	}
 	models, err := canonicalTargetModels(cfg.TargetModels)
 	if err != nil {
 		return nil, err
@@ -291,6 +296,7 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 		AnalysisCacheSize:      cfg.AnalysisCacheSize,
 		AnalysisCacheTTL:       time.Duration(cfg.AnalysisCacheTTL) * time.Second,
 		URLAnalysisCacheTTL:    time.Duration(cfg.URLAnalysisCacheTTL) * time.Second,
+		TraceEnabled:           cfg.TraceEnabled,
 	}, nil
 }
 
@@ -367,6 +373,7 @@ func defaultRaw() defaults {
 		AnalysisCacheSize:      DefaultAnalysisCacheSize,
 		AnalysisCacheTTL:       DefaultAnalysisCacheTTL,
 		URLAnalysisCacheTTL:    DefaultURLCacheTTL,
+		TraceEnabled:           false,
 	}
 }
 
@@ -385,5 +392,6 @@ func defaultConfig() *Config {
 		AnalysisCacheSize:      d.AnalysisCacheSize,
 		AnalysisCacheTTL:       time.Duration(d.AnalysisCacheTTL) * time.Second,
 		URLAnalysisCacheTTL:    time.Duration(d.URLAnalysisCacheTTL) * time.Second,
+		TraceEnabled:           d.TraceEnabled,
 	}
 }

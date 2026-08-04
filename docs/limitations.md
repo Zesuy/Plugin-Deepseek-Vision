@@ -38,6 +38,9 @@
 - The process-local cache capacity and data-URI/URL TTLs are configurable
   (defaults: 128 entries, 15 minutes, and 2 minutes). Reconfigure/restart clears
   it. It is not distributed, so another CLIProxyAPI process may repeat the analysis.
+- The opt-in full-context trace is process-local and intentionally stores
+  plaintext user/image/model data. It is a diagnostic capture, not an audit log,
+  and must not be left enabled as normal production logging.
 - `deepseek-v4-pro` is retained as a future-supported target, but its Responses
   availability currently depends on the upstream service. It is not required,
   probed, or release-tested in v0.1.0; real validation uses `deepseek-v4-flash`.

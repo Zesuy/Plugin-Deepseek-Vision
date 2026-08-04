@@ -176,7 +176,7 @@ func TestInvalidInitialConfigurationStillPublishesFields(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &registered); err != nil {
 		t.Fatal(err)
 	}
-	if len(registered.Metadata.ConfigFields) != 5 {
+	if len(registered.Metadata.ConfigFields) != 6 {
 		t.Fatalf("config fields=%#v", registered.Metadata.ConfigFields)
 	}
 }

@@ -199,6 +199,7 @@ func pluginRegistration() registration {
 				{Name: "analysis_cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "视觉分析缓存条目数，0 关闭缓存。默认值 / Analysis cache entries; 0 disables. Default: 128."},
 				{Name: "analysis_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "data URI 分析缓存秒数。默认值 / Data-URI analysis cache TTL in seconds. Default: 900."},
 				{Name: "analysis_url_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "URL 图片分析缓存秒数。默认值 / URL-image analysis cache TTL in seconds. Default: 120."},
+				{Name: "trace_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "完整明文调试 trace；包含请求、图片引用和模型结果，仅临时开启。默认值 / Full plaintext debug trace; includes requests, image references, and model results. Enable temporarily. Default: false."},
 			},
 		},
 		Capabilities: registrationCapability{RequestInterceptor: true},

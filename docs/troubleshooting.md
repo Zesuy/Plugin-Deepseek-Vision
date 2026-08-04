@@ -112,5 +112,17 @@ checking VLM latency. A 413 response now distinguishes request-body,
 image-reference and image-count limits. Check the matching CLIProxyAPI warning
 from `host.log` for `limit_kind`, `actual`, `maximum`, active size settings and
 `config_generation`; ABI admission warnings include their byte budget and
-in-flight usage. The trace never contains image data or credentials. Provider
-retry behavior is controlled by CLIProxyAPI.
+in-flight usage. This ordinary host-log warning never contains image data or
+credentials. Provider retry behavior is controlled by CLIProxyAPI.
+
+For a multi-turn request whose ordinary 413 warning is insufficient, enable:
+
+```yaml
+trace_enabled: true
+```
+
+Reproduce once, then inspect `logs/deepseek-vision-trace/events.jsonl` and the
+referenced request bundle. `20-discovery-error.json` includes total, unique,
+duplicate, last-image-item, earlier-item, content, and function-output image
+counts. The inbound body and image references are preserved in plaintext, so
+disable tracing and remove the bundle after diagnosis.

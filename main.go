@@ -202,7 +202,11 @@ func acquireABIAdmission(length uint64) abiAdmissionFailure {
 
 func traceABIRejection(reason string, requestBytes uint64) {
 	defer func() { _ = recover() }()
-	emitHostDiagnostic("", "warn", "deepseek-vision RPC rejected by ABI admission", map[string]any{
+	message := fmt.Sprintf(
+		"deepseek-vision RPC rejected limit_kind=%s abi_request_bytes=%d abi_request_limit_bytes=%d abi_process_budget_bytes=%d abi_in_flight_bytes=%d abi_in_flight_requests=%d",
+		reason, requestBytes, maxABIRequestBytes, maxABIBudgetBytes, abiInFlightBytes.Load(), abiInFlightRequests.Load(),
+	)
+	emitHostDiagnostic("", "warn", message, map[string]any{
 		"limit_kind":               reason,
 		"abi_request_bytes":        requestBytes,
 		"abi_request_limit_bytes":  maxABIRequestBytes,

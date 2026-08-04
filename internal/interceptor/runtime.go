@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/safety"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
@@ -57,6 +59,7 @@ type Runtime struct {
 	current    *runtimeState
 	factory    AnalyzerFactory
 	diagnostic DiagnosticFunc
+	trace      *tracelog.Sink
 	generation uint64
 	// targetModels is retained across shutdown so the unavailable fallback can
 	// preserve the same model gate. Without this snapshot, a shutdown would
@@ -67,9 +70,14 @@ type Runtime struct {
 }
 
 func NewRuntime(factory AnalyzerFactory, diagnostics ...DiagnosticFunc) *Runtime {
+	return NewRuntimeWithTrace(factory, nil, diagnostics...)
+}
+
+func NewRuntimeWithTrace(factory AnalyzerFactory, trace *tracelog.Sink, diagnostics ...DiagnosticFunc) *Runtime {
 	defaults := config.Default()
 	runtime := &Runtime{
 		factory:      factory,
+		trace:        trace,
 		targetModels: append([]string(nil), defaults.TargetModels...),
 	}
 	if len(diagnostics) > 0 {
@@ -126,10 +134,13 @@ func (r *Runtime) acquire() (*runtimeState, error) {
 // allowed to fail open when callback errors are returned.
 func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.RequestInterceptResponse, err error) {
 	resp = passthrough(req)
+	started := time.Now()
+	var traceSession *tracelog.Session
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			resp = terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
 		}
+		safeTraceResult(traceSession, started, resp)
 		err = nil
 	}()
 
@@ -149,10 +160,12 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	if !eligible(req, cfg) {
 		return resp, nil
 	}
+	traceSession = r.safeStartFullTrace(state, req)
 	baseCtx := context.Background()
 	if callbackID, _ := req.Metadata[HostCallbackIDMetadataKey].(string); callbackID != "" {
 		baseCtx = vision.WithHostCallbackID(baseCtx, callbackID)
 	}
+	baseCtx = tracelog.WithSession(baseCtx, traceSession)
 	ctx, cancel := context.WithTimeout(baseCtx, cfg.RequestTimeout)
 	defer cancel()
 
@@ -166,44 +179,60 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing deadline exceeded"), nil
 	}
 	if planErr != nil {
+		traceDiscoveryError(traceSession, planErr)
 		r.tracePlannerLimit(ctx, state, planErr)
 		return terminateForError(planErr), nil
 	}
 	if !plan.HasImages() {
+		traceDiscovery(traceSession, plan)
 		return resp, nil
 	}
 
 	images := plan.Images()
+	traceDiscovery(traceSession, plan)
 	results := make([]string, len(images))
 	type analysisJob struct {
-		key       string
-		ttl       time.Duration
-		reference string
-		focusHint string
-		indexes   []int
+		id           int
+		key          string
+		ttl          time.Duration
+		reference    string
+		focusHint    string
+		indexes      []int
+		imageNumbers []int
 	}
 	jobsByKey := make(map[string]*analysisJob, len(images))
 	jobs := make([]*analysisJob, 0, len(images))
+	cachePlan := cacheTracePlan{Images: make([]cacheTraceRecord, 0, len(images))}
 	for i := range images {
 		key, ttl := analysisCacheKey(images[i].Reference, cfg.VisionModel, cfg.Language, images[i].FocusHint, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
 		if cached, ok := state.cache.Get(key); ok {
 			results[i] = cached
+			cachePlan.CacheHits++
+			cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "cache_hit", CacheKey: key})
 			continue
 		}
 		if existing := jobsByKey[key]; existing != nil {
 			existing.indexes = append(existing.indexes, i)
+			existing.imageNumbers = append(existing.imageNumbers, images[i].Number)
+			cachePlan.RequestDeduplicates++
+			cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "request_deduplicated", JobID: existing.id, CacheKey: key})
 			continue
 		}
-		job := &analysisJob{key: key, ttl: ttl, reference: images[i].Reference, focusHint: images[i].FocusHint, indexes: []int{i}}
+		job := &analysisJob{id: len(jobs) + 1, key: key, ttl: ttl, reference: images[i].Reference, focusHint: images[i].FocusHint, indexes: []int{i}, imageNumbers: []int{images[i].Number}}
 		jobsByKey[key] = job
 		jobs = append(jobs, job)
+		cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "vlm_job", JobID: job.id, CacheKey: key})
 	}
+	cachePlan.VLMJobs = len(jobs)
+	traceCache(traceSession, cachePlan)
 	if len(jobs) == 0 {
 		rewritten, rewriteErr := plan.RewriteText(results)
 		if rewriteErr != nil {
+			traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 			r.tracePlannerLimit(ctx, state, rewriteErr)
 			return terminateForError(rewriteErr), nil
 		}
+		traceRewrite(traceSession, req.Body, rewritten, len(images))
 		return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
 	}
 	analyzer, analyzerErr := state.getAnalyzer()
@@ -218,7 +247,8 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, analyzeErr := safeAnalyze(ctx, analyzer, job.reference, job.focusHint, cfg.MaxResultChars)
+			jobCtx := tracelog.WithJob(ctx, tracelog.Job{ID: job.id, ImageNumbers: job.imageNumbers})
+			result, analyzeErr := safeAnalyze(jobCtx, analyzer, job.reference, job.focusHint, cfg.MaxResultChars)
 			if analyzeErr != nil {
 				errMu.Lock()
 				if firstErr == nil {
@@ -243,9 +273,11 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	}
 	rewritten, rewriteErr := plan.RewriteText(results)
 	if rewriteErr != nil {
+		traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 		r.tracePlannerLimit(ctx, state, rewriteErr)
 		return terminateForError(rewriteErr), nil
 	}
+	traceRewrite(traceSession, req.Body, rewritten, len(images))
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
 }
 
@@ -292,7 +324,12 @@ func (r *Runtime) tracePlannerLimit(ctx context.Context, state *runtimeState, er
 		"max_image_reference_bytes": state.cfg.MaxImageReferenceBytes,
 		"max_images_per_request":    state.cfg.MaxImagesPerRequest,
 	}
-	safeDiagnostic(r.diagnostic, vision.HostCallbackID(ctx), "warn", "deepseek-vision request rejected by configured limit", fields)
+	message := fmt.Sprintf(
+		"deepseek-vision request rejected limit_kind=%s actual=%d maximum=%d config_generation=%d max_request_bytes=%d max_image_reference_bytes=%d max_images_per_request=%d",
+		planner.Limit, planner.Actual, planner.Maximum, state.generation,
+		state.cfg.MaxRequestBytes, state.cfg.MaxImageReferenceBytes, state.cfg.MaxImagesPerRequest,
+	)
+	safeDiagnostic(r.diagnostic, vision.HostCallbackID(ctx), "warn", message, fields)
 }
 
 func safeDiagnostic(diagnostic DiagnosticFunc, callbackID, level, message string, fields map[string]any) {
@@ -364,7 +401,7 @@ func terminateForError(err error) pluginapi.RequestInterceptResponse {
 		case http.StatusBadRequest:
 			return terminate(http.StatusBadRequest, "invalid_request_error", "invalid Responses request")
 		case http.StatusRequestEntityTooLarge:
-			return terminate(http.StatusRequestEntityTooLarge, "invalid_request_error", publicLimitMessage(planner.Limit))
+			return terminate(http.StatusRequestEntityTooLarge, "invalid_request_error", publicLimitMessage(planner.Limit, planner.Actual, planner.Maximum))
 		case http.StatusUnprocessableEntity:
 			return terminate(http.StatusUnprocessableEntity, "invalid_request_error", "unsupported image source")
 		}
@@ -372,15 +409,27 @@ func terminateForError(err error) pluginapi.RequestInterceptResponse {
 	return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
 }
 
-func publicLimitMessage(limit responses.LimitKind) string {
+func publicLimitMessage(limit responses.LimitKind, actual, maximum int) string {
 	switch limit {
 	case responses.LimitRequestBody:
+		if actual > 0 && maximum > 0 {
+			return fmt.Sprintf("request body exceeds configured limit: found %d bytes, limit %d", actual, maximum)
+		}
 		return "request body exceeds configured limit"
 	case responses.LimitImageReference:
+		if actual > 0 && maximum > 0 {
+			return fmt.Sprintf("image reference exceeds configured limit: found %d bytes, limit %d", actual, maximum)
+		}
 		return "image reference exceeds configured limit"
 	case responses.LimitImageCount:
+		if actual > 0 && maximum > 0 {
+			return fmt.Sprintf("request contains too many images: found %d image blocks, limit %d", actual, maximum)
+		}
 		return "request contains too many images"
 	case responses.LimitVLMResult:
+		if actual > 0 && maximum > 0 {
+			return fmt.Sprintf("vision result exceeds configured limit: found %d characters, limit %d", actual, maximum)
+		}
 		return "vision result exceeds configured limit"
 	default:
 		return "request exceeds configured limit"

@@ -154,3 +154,9 @@ Visual description:
 只有所有图片都成功并完成 body 改写后，拦截器才返回成功结果；失败路径绝不向
 DeepSeek executor 发起调用。插件必须设置总预处理硬超时和响应体上限，并把可取消
 context 传给 `host.model.execute`；供应商传输与重试策略由 CLIProxyAPI 宿主负责。
+
+`trace_enabled` 默认关闭。开启后，插件可在 `logs/deepseek-vision-trace/` 保存完整明文
+调试上下文，包括原始多轮请求、图片引用、focus hint、缓存计划、VLM 请求/响应和改写
+结果；Authorization、API key/token/secret/credential/cookie 类 header、query 与 metadata
+字段以及内部 host callback ID 必须强制脱敏。trace 文件错误不得改变请求结果、运行时
+generation 或插件注册状态。

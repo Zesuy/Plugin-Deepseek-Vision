@@ -235,6 +235,8 @@ curl -sS \
 
 每次 `413` 都会通过宿主的 `host.log` 写入一条安全的 warning，并自动关联可用的 request ID。日志只包含 `limit_kind`、实际值、上限、当前 size 配置与配置 generation；不会写入图片、data URI、请求正文、headers 或凭据。
 
+需要复盘复杂多轮请求时，可临时设置 `trace_enabled: true`。插件会在 `logs/deepseek-vision-trace/` 写入事件索引和逐请求上下文包，明文保存原始多轮 body、图片 URL/data URI、发现位置与 focus hint、缓存计划、完整 VLM 请求/响应以及最终改写 body。凭据类 header/metadata 始终脱敏。该目录等同于完整用户数据副本，诊断后应立即关闭开关并安全删除文件。详见 [配置文档](docs/configuration.md#full-context-debug-trace)。
+
 ## 隐私、延迟与费用
 
 - VLM 会收到图片引用和一段有界的上下文提示；请确认供应商的数据保留、访问控制与数据驻留政策。
