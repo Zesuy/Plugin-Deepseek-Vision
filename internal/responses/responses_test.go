@@ -188,6 +188,33 @@ func TestTypedErrors(t *testing.T) {
 	}
 }
 
+func TestLimitErrorsExposeSafeMeasurements(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		options Options
+		limit   LimitKind
+		actual  int
+		maximum int
+	}{
+		{"request body", `{"input":"0123456789"}`, Options{MaxBodyBytes: 8}, LimitRequestBody, len(`{"input":"0123456789"}`), 8},
+		{"image reference", `{"input":[{"content":[{"type":"input_image","image_url":"https://example.com/a.png"}]}]}`, Options{MaxReferenceBytes: 8}, LimitImageReference, len("https://example.com/a.png"), 8},
+		{"image count", `{"input":[{"content":[{"type":"input_image","image_url":"https://e/x"},{"type":"input_image","image_url":"https://e/y"}]}]}`, Options{MaxImages: 1}, LimitImageCount, 2, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Discover([]byte(test.body), test.options)
+			var plannerErr *Error
+			if !errors.As(err, &plannerErr) {
+				t.Fatalf("error = %T, want *Error", err)
+			}
+			if plannerErr.Limit != test.limit || plannerErr.Actual != test.actual || plannerErr.Maximum != test.maximum {
+				t.Fatalf("limit error = %#v", plannerErr)
+			}
+		})
+	}
+}
+
 func TestDiscoverAcceptsDataImageCaseAndParameters(t *testing.T) {
 	body := []byte(`{"input":[{"content":[{"type":"input_image","image_url":"DATA:IMAGE/PNG;charset=utf-8;BASE64,QUJDRA=="}]}]}`)
 	plan, err := Discover(body)

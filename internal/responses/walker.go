@@ -118,7 +118,7 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 		opt = options[0].normalized()
 	}
 	if len(body) > opt.MaxBodyBytes {
-		return nil, limits("request body exceeds configured limit", "body")
+		return nil, limitExceeded(LimitRequestBody, len(body), opt.MaxBodyBytes, "request body exceeds configured limit", "body")
 	}
 
 	root, err := decodeJSON(body)
@@ -218,7 +218,7 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 		}
 	}
 	if len(pending) > opt.MaxImages {
-		return nil, limits("request contains too many images", "input")
+		return nil, limitExceeded(LimitImageCount, len(pending), opt.MaxImages, "request contains too many images", "input")
 	}
 
 	for i := range pending {
@@ -277,7 +277,7 @@ func discoverImage(block map[string]any, location imageLocation, number int, opt
 		}
 		if err := safety.ValidateImageReference(reference, opt.MaxReferenceBytes); err != nil {
 			if errors.Is(err, safety.ErrImageReferenceTooLarge) {
-				return pendingImage{}, limits("image reference exceeds configured limit", locationPath(location))
+				return pendingImage{}, limitExceeded(LimitImageReference, len(reference), opt.MaxReferenceBytes, "image reference exceeds configured limit", locationPath(location))
 			}
 			// Detailed validator failures are deliberately collapsed into the
 			// stable public 422 contract; never include the source reference.

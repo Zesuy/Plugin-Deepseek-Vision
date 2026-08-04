@@ -25,7 +25,8 @@
   visible-text transcription and visual explanation.
 - For an eligible Responses image request, malformed JSON is a 400, unsupported
   image sources are a 422, configured body/reference/image-count limits are a
-  413, and VLM/timeout/invalid-result/rewrite failures are a 502. Failures are
+  413 with a category-specific public message and a content-free `host.log`
+  diagnostic, and VLM/timeout/invalid-result/rewrite failures are a 502. Failures are
   fail-closed and never forward the original image; non-eligible requests pass
   through by design.
 - When the runtime is unavailable before normal discovery, targeted malformed

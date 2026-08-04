@@ -33,3 +33,8 @@ partial rewrites and accidental original-image forwarding are not allowed.
 
 Keep `max_images_per_request` and body/reference limits small enough for the
 deployment. These are both resource controls and abuse boundaries.
+
+Configured-limit and ABI-admission rejections emit a structured warning through
+the host logger. Diagnostics are intentionally restricted to limit names,
+integer sizes/counts, active limit values and configuration generation; image
+references, request bodies, headers and credentials are never included.

@@ -40,8 +40,9 @@ func (p *Plan) Rewrite(results []ImageResult) ([]byte, error) {
 		if strings.TrimSpace(result.VisibleText) == "" && strings.TrimSpace(result.VisualDescription) == "" {
 			return nil, plannerError(ErrorInvalidResult, 502, fmt.Sprintf("VLM result %d is empty", i+1), "input")
 		}
-		if p.options.MaxResultChars > 0 && runeLen(result.VisibleText)+runeLen(result.VisualDescription) > p.options.MaxResultChars {
-			return nil, limits("VLM result exceeds configured limit", "input")
+		resultChars := runeLen(result.VisibleText) + runeLen(result.VisualDescription)
+		if p.options.MaxResultChars > 0 && resultChars > p.options.MaxResultChars {
+			return nil, limitExceeded(LimitVLMResult, resultChars, p.options.MaxResultChars, "VLM result exceeds configured limit", "input")
 		}
 	}
 

@@ -237,16 +237,16 @@ func TestABIAdmissionBoundsConcurrentCopies(t *testing.T) {
 	if abiInFlightRequests.Load() != 0 || abiInFlightBytes.Load() != 0 {
 		t.Fatal("ABI admission state was not clean at test start")
 	}
-	if tryAcquireABIAdmission(maxABIBudgetBytes + 1) {
-		t.Fatal("request larger than process byte budget was admitted")
+	if got := acquireABIAdmission(maxABIBudgetBytes + 1); got != abiAdmissionRequestBudget {
+		t.Fatalf("oversized request failure = %q", got)
 	}
 	for i := int64(0); i < maxABIInFlightRequests; i++ {
-		if !tryAcquireABIAdmission(1) {
-			t.Fatalf("admission slot %d was unexpectedly denied", i)
+		if got := acquireABIAdmission(1); got != abiAdmissionOK {
+			t.Fatalf("admission slot %d was unexpectedly denied: %q", i, got)
 		}
 	}
-	if tryAcquireABIAdmission(1) {
-		t.Fatal("request count budget was exceeded")
+	if got := acquireABIAdmission(1); got != abiAdmissionRequestCount {
+		t.Fatalf("request-count failure = %q", got)
 	}
 	for i := int64(0); i < maxABIInFlightRequests; i++ {
 		releaseABIAdmission(1)
@@ -254,6 +254,13 @@ func TestABIAdmissionBoundsConcurrentCopies(t *testing.T) {
 	if abiInFlightRequests.Load() != 0 || abiInFlightBytes.Load() != 0 {
 		t.Fatal("ABI admission state did not release cleanly")
 	}
+	if got := acquireABIAdmission(maxABIBudgetBytes - 1); got != abiAdmissionOK {
+		t.Fatalf("large admission = %q", got)
+	}
+	if got := acquireABIAdmission(2); got != abiAdmissionProcessBudget {
+		t.Fatalf("process-budget failure = %q", got)
+	}
+	releaseABIAdmission(maxABIBudgetBytes - 1)
 }
 
 func TestOversizedInterceptorsTerminateWith413WithoutDecode(t *testing.T) {

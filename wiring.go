@@ -8,7 +8,7 @@ import (
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
-var pluginRuntime = interceptor.NewRuntime(buildVisionAnalyzer)
+var pluginRuntime = interceptor.NewRuntime(buildVisionAnalyzer, emitHostDiagnostic)
 var hostVisionExecute vision.HostExecuteFunc = executeHostModel
 
 func reconfigureRuntimeWithConfig(cfg *config.Config) {

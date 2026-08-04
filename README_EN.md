@@ -117,10 +117,14 @@ release assets.
   targeted image requests fail closed while the configuration UI stays
   available.
 - For an eligible Responses request, malformed JSON returns 400, unsupported
-  image references return 422, configured size limits return 413, and VLM,
+  image references return 422, configured size limits return 413 with the
+  rejected limit category, and VLM,
   timeout, or rewrite failures return 502. Failures terminate the request and
   never fall back to forwarding an original image; non-eligible protocols and
   models retain pass-through behavior.
+- Every 413 emits one content-free warning through the host's `host.log`, tied
+  to the request ID when available. It records only the limit kind, actual and
+  maximum values, active size settings, and configuration generation.
 - If the runtime is unavailable before normal discovery can run, a targeted
   Responses request with malformed or image-shaped input is conservatively
   terminated with 502; unrelated models still pass through.

@@ -97,6 +97,15 @@ var (
 	errABIAdmissionBusy         = errors.New("ABI request memory budget is exhausted")
 )
 
+type abiAdmissionFailure string
+
+const (
+	abiAdmissionOK            abiAdmissionFailure = ""
+	abiAdmissionRequestBudget abiAdmissionFailure = "request_budget"
+	abiAdmissionRequestCount  abiAdmissionFailure = "request_count"
+	abiAdmissionProcessBudget abiAdmissionFailure = "process_budget"
+)
+
 var (
 	abiInFlightRequests atomic.Int64
 	abiInFlightBytes    atomic.Uint64
@@ -130,13 +139,15 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	methodName := C.GoString(method)
 	checkedLength, err := checkedABIRequestLength(uint64(requestLen))
 	if err != nil {
+		traceABIRejection("abi_request_limit", uint64(requestLen))
 		raw, returnCode := oversizedRequestResult(methodName, err)
 		if !writeResponse(response, raw) {
 			return 1
 		}
 		return C.int(returnCode)
 	}
-	if !tryAcquireABIAdmission(uint64(checkedLength)) {
+	if admissionFailure := acquireABIAdmission(uint64(checkedLength)); admissionFailure != abiAdmissionOK {
+		traceABIRejection(string(admissionFailure), uint64(checkedLength))
 		raw, returnCode := oversizedRequestResult(methodName, errABIAdmissionBusy)
 		if !writeResponse(response, raw) {
 			return 1
@@ -163,14 +174,14 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	return 0
 }
 
-func tryAcquireABIAdmission(length uint64) bool {
+func acquireABIAdmission(length uint64) abiAdmissionFailure {
 	if length > maxABIBudgetBytes {
-		return false
+		return abiAdmissionRequestBudget
 	}
 	for {
 		current := abiInFlightRequests.Load()
 		if current >= maxABIInFlightRequests {
-			return false
+			return abiAdmissionRequestCount
 		}
 		if abiInFlightRequests.CompareAndSwap(current, current+1) {
 			break
@@ -178,12 +189,27 @@ func tryAcquireABIAdmission(length uint64) bool {
 	}
 	for {
 		current := abiInFlightBytes.Load()
-		if current > maxABIBudgetBytes-length || !abiInFlightBytes.CompareAndSwap(current, current+length) {
+		if current > maxABIBudgetBytes-length {
 			abiInFlightRequests.Add(-1)
-			return false
+			return abiAdmissionProcessBudget
 		}
-		return true
+		if !abiInFlightBytes.CompareAndSwap(current, current+length) {
+			continue
+		}
+		return abiAdmissionOK
 	}
+}
+
+func traceABIRejection(reason string, requestBytes uint64) {
+	defer func() { _ = recover() }()
+	emitHostDiagnostic("", "warn", "deepseek-vision RPC rejected by ABI admission", map[string]any{
+		"limit_kind":               reason,
+		"abi_request_bytes":        requestBytes,
+		"abi_request_limit_bytes":  maxABIRequestBytes,
+		"abi_process_budget_bytes": maxABIBudgetBytes,
+		"abi_in_flight_bytes":      abiInFlightBytes.Load(),
+		"abi_in_flight_requests":   abiInFlightRequests.Load(),
+	})
 }
 
 func releaseABIAdmission(length uint64) {

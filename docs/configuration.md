@@ -26,6 +26,12 @@ raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
 subsequent JSON/rewrite allocations; it can reject a request before the larger
 per-configuration `max_request_bytes` ceiling is reached.
 
+Limit rejections are diagnosed through CLIProxyAPI's native `host.log`. A 413
+warning contains `limit_kind`, `actual`, `maximum`, the active body/reference/
+image-count settings, and `config_generation`. ABI admission failures instead
+report the ABI request bytes, hard cap, process budget and in-flight usage. No
+request body, image reference, header or credential is logged.
+
 The plugin calls `host.model.execute` with OpenAI Responses input and lets
 CLIProxyAPI route `vision_model` using its existing provider credentials. The
 nested execution skips this plugin's own interceptor, so it does not recurse.

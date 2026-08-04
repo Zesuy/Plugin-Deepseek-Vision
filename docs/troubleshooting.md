@@ -108,5 +108,9 @@ plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
 ## Slow or rejected requests
 
 Reduce `max_images_per_request` or increase the bounded total timeout only after
-checking VLM latency. A 413 indicates a configured body/reference/ABI limit;
-provider retry behavior is controlled by CLIProxyAPI.
+checking VLM latency. A 413 response now distinguishes request-body,
+image-reference and image-count limits. Check the matching CLIProxyAPI warning
+from `host.log` for `limit_kind`, `actual`, `maximum`, active size settings and
+`config_generation`; ABI admission warnings include their byte budget and
+in-flight usage. The trace never contains image data or credentials. Provider
+retry behavior is controlled by CLIProxyAPI.

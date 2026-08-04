@@ -1,7 +1,9 @@
 package interceptor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
 
@@ -126,6 +129,84 @@ func TestHandleRewritesAllSupportedImagesWithFocus(t *testing.T) {
 		if focus == "" {
 			t.Fatal("missing per-image focus hint")
 		}
+	}
+}
+
+func TestHandleTracesExactConfiguredLimitWithoutContent(t *testing.T) {
+	type diagnostic struct {
+		callbackID string
+		level      string
+		message    string
+		fields     map[string]any
+	}
+	var got diagnostic
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) {
+		return &testAnalyzer{}, nil
+	}, func(callbackID, level, message string, fields map[string]any) {
+		got = diagnostic{callbackID: callbackID, level: level, message: message, fields: fields}
+	})
+	r.Reconfigure(testConfig(t))
+	defer r.Shutdown()
+
+	body := bytes.Repeat([]byte("x"), 1048577)
+	req := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", string(body))
+	req.Metadata[HostCallbackIDMetadataKey] = "callback-123"
+	resp, err := r.Handle(req)
+	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("response = %#v, err=%v", resp, err)
+	}
+	var public struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp.ResponseBody, &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.Error.Message != "request body exceeds configured limit" {
+		t.Fatalf("public message = %q", public.Error.Message)
+	}
+	if got.callbackID != "callback-123" || got.level != "warn" || got.message == "" {
+		t.Fatalf("diagnostic = %#v", got)
+	}
+	if got.fields["limit_kind"] != "request_body" || got.fields["actual"] != len(body) || got.fields["maximum"] != 1048576 {
+		t.Fatalf("diagnostic fields = %#v", got.fields)
+	}
+	for _, value := range got.fields {
+		if text, ok := value.(string); ok && strings.Contains(text, "xxxx") {
+			t.Fatal("diagnostic leaked request content")
+		}
+	}
+}
+
+func TestPublicLimitMessagesAreSpecific(t *testing.T) {
+	tests := map[responses.LimitKind]string{
+		responses.LimitRequestBody:    "request body exceeds configured limit",
+		responses.LimitImageReference: "image reference exceeds configured limit",
+		responses.LimitImageCount:     "request contains too many images",
+		responses.LimitVLMResult:      "vision result exceeds configured limit",
+	}
+	for limit, want := range tests {
+		if got := publicLimitMessage(limit); got != want {
+			t.Errorf("publicLimitMessage(%q) = %q, want %q", limit, got, want)
+		}
+	}
+}
+
+func TestDiagnosticPanicCannotChangeLimitResponse(t *testing.T) {
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) {
+		return &testAnalyzer{}, nil
+	}, func(string, string, string, map[string]any) {
+		panic("diagnostic unavailable")
+	})
+	r.Reconfigure(testConfig(t))
+	defer r.Shutdown()
+
+	body := bytes.Repeat([]byte("x"), 1048577)
+	req := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", string(body))
+	resp, err := r.Handle(req)
+	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("response changed after diagnostic panic: %#v, err=%v", resp, err)
 	}
 }
 

@@ -24,13 +24,18 @@ const HostCallbackIDMetadataKey = "__deepseek_vision_host_callback_id"
 // configuration snapshot. It is initialized lazily only for eligible images.
 type AnalyzerFactory func(*config.Config) (vision.Analyzer, error)
 
+// DiagnosticFunc emits bounded, content-free runtime diagnostics through the
+// host. callbackID lets CLIProxyAPI attach its request ID when available.
+type DiagnosticFunc func(callbackID, level, message string, fields map[string]any)
+
 type runtimeState struct {
-	cfg      *config.Config
-	factory  AnalyzerFactory
-	cache    *analysisCache
-	once     sync.Once
-	analyzer vision.Analyzer
-	err      error
+	cfg        *config.Config
+	factory    AnalyzerFactory
+	cache      *analysisCache
+	generation uint64
+	once       sync.Once
+	analyzer   vision.Analyzer
+	err        error
 }
 
 func (s *runtimeState) getAnalyzer() (vision.Analyzer, error) {
@@ -48,9 +53,11 @@ func (s *runtimeState) getAnalyzer() (vision.Analyzer, error) {
 
 // Runtime manages immutable generations and implements the plugin handler.
 type Runtime struct {
-	mu      sync.Mutex
-	current *runtimeState
-	factory AnalyzerFactory
+	mu         sync.Mutex
+	current    *runtimeState
+	factory    AnalyzerFactory
+	diagnostic DiagnosticFunc
+	generation uint64
 	// targetModels is retained across shutdown so the unavailable fallback can
 	// preserve the same model gate. Without this snapshot, a shutdown would
 	// conservatively reject image requests for every Responses model instead of
@@ -59,12 +66,16 @@ type Runtime struct {
 	shutdown     bool
 }
 
-func NewRuntime(factory AnalyzerFactory) *Runtime {
+func NewRuntime(factory AnalyzerFactory, diagnostics ...DiagnosticFunc) *Runtime {
 	defaults := config.Default()
-	return &Runtime{
+	runtime := &Runtime{
 		factory:      factory,
 		targetModels: append([]string(nil), defaults.TargetModels...),
 	}
+	if len(diagnostics) > 0 {
+		runtime.diagnostic = diagnostics[0]
+	}
+	return runtime
 }
 
 // Reconfigure atomically publishes a new immutable snapshot. In-flight calls
@@ -78,8 +89,9 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 		return
 	}
 	r.mu.Lock()
+	r.generation++
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
-	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize)}
+	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize), generation: r.generation}
 	r.shutdown = false
 	r.mu.Unlock()
 }
@@ -154,6 +166,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing deadline exceeded"), nil
 	}
 	if planErr != nil {
+		r.tracePlannerLimit(ctx, state, planErr)
 		return terminateForError(planErr), nil
 	}
 	if !plan.HasImages() {
@@ -188,6 +201,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	if len(jobs) == 0 {
 		rewritten, rewriteErr := plan.RewriteText(results)
 		if rewriteErr != nil {
+			r.tracePlannerLimit(ctx, state, rewriteErr)
 			return terminateForError(rewriteErr), nil
 		}
 		return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
@@ -229,6 +243,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	}
 	rewritten, rewriteErr := plan.RewriteText(results)
 	if rewriteErr != nil {
+		r.tracePlannerLimit(ctx, state, rewriteErr)
 		return terminateForError(rewriteErr), nil
 	}
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
@@ -258,6 +273,31 @@ func (r *Runtime) targetModelSnapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.targetModels...)
+}
+
+func (r *Runtime) tracePlannerLimit(ctx context.Context, state *runtimeState, err error) {
+	if r == nil || state == nil || r.diagnostic == nil {
+		return
+	}
+	var planner *responses.Error
+	if !errors.As(err, &planner) || planner.StatusCode != http.StatusRequestEntityTooLarge {
+		return
+	}
+	fields := map[string]any{
+		"limit_kind":                string(planner.Limit),
+		"actual":                    planner.Actual,
+		"maximum":                   planner.Maximum,
+		"config_generation":         state.generation,
+		"max_request_bytes":         state.cfg.MaxRequestBytes,
+		"max_image_reference_bytes": state.cfg.MaxImageReferenceBytes,
+		"max_images_per_request":    state.cfg.MaxImagesPerRequest,
+	}
+	safeDiagnostic(r.diagnostic, vision.HostCallbackID(ctx), "warn", "deepseek-vision request rejected by configured limit", fields)
+}
+
+func safeDiagnostic(diagnostic DiagnosticFunc, callbackID, level, message string, fields map[string]any) {
+	defer func() { _ = recover() }()
+	diagnostic(callbackID, level, message, fields)
 }
 
 // HandleUnavailable is the lifecycle fallback used while no generation is
@@ -324,12 +364,27 @@ func terminateForError(err error) pluginapi.RequestInterceptResponse {
 		case http.StatusBadRequest:
 			return terminate(http.StatusBadRequest, "invalid_request_error", "invalid Responses request")
 		case http.StatusRequestEntityTooLarge:
-			return terminate(http.StatusRequestEntityTooLarge, "invalid_request_error", "request exceeds configured limit")
+			return terminate(http.StatusRequestEntityTooLarge, "invalid_request_error", publicLimitMessage(planner.Limit))
 		case http.StatusUnprocessableEntity:
 			return terminate(http.StatusUnprocessableEntity, "invalid_request_error", "unsupported image source")
 		}
 	}
 	return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
+}
+
+func publicLimitMessage(limit responses.LimitKind) string {
+	switch limit {
+	case responses.LimitRequestBody:
+		return "request body exceeds configured limit"
+	case responses.LimitImageReference:
+		return "image reference exceeds configured limit"
+	case responses.LimitImageCount:
+		return "request contains too many images"
+	case responses.LimitVLMResult:
+		return "vision result exceeds configured limit"
+	default:
+		return "request exceeds configured limit"
+	}
 }
 
 func terminate(status int, typ, message string) pluginapi.RequestInterceptResponse {

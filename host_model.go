@@ -14,6 +14,13 @@ type hostModelExecutionRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type hostLogRequest struct {
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
+	Level          string         `json:"level,omitempty"`
+	Message        string         `json:"message,omitempty"`
+	Fields         map[string]any `json:"fields,omitempty"`
+}
+
 func executeHostModel(_ context.Context, request pluginapi.HostModelExecutionRequest, callbackID string) (pluginapi.HostModelExecutionResponse, error) {
 	result, err := callHost(pluginabi.MethodHostModelExecute, hostModelExecutionRequest{
 		HostModelExecutionRequest: request,
@@ -27,4 +34,13 @@ func executeHostModel(_ context.Context, request pluginapi.HostModelExecutionReq
 		return pluginapi.HostModelExecutionResponse{}, errors.New("host model execution returned an invalid response")
 	}
 	return response, nil
+}
+
+func emitHostDiagnostic(callbackID, level, message string, fields map[string]any) {
+	_, _ = callHost(pluginabi.MethodHostLog, hostLogRequest{
+		HostCallbackID: callbackID,
+		Level:          level,
+		Message:        message,
+		Fields:         fields,
+	})
 }
