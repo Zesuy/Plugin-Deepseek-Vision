@@ -5,12 +5,12 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/deepseek-vision-smoke.XXXXXX")"
 trap 'rm -rf "$smoke_dir"' EXIT
 
-VERSION="${VERSION:-0.1.0}" DIST_DIR="$smoke_dir/dist" \
+VERSION="${VERSION:-0.1.1}" DIST_DIR="$smoke_dir/dist" \
   "$repo_dir/scripts/package.sh"
-VERSION="${VERSION:-0.1.0}" DIST_DIR="$smoke_dir/dist" \
+VERSION="${VERSION:-0.1.1}" DIST_DIR="$smoke_dir/dist" \
   "$repo_dir/scripts/checksum.sh"
 
-VERSION="${VERSION:-0.1.0}" DIST_DIR="$smoke_dir/dist" ARCHIVE_ROOT="$smoke_dir/unpacked" \
+VERSION="${VERSION:-0.1.1}" DIST_DIR="$smoke_dir/dist" ARCHIVE_ROOT="$smoke_dir/unpacked" \
   python3 - <<'PY'
 import hashlib
 import os

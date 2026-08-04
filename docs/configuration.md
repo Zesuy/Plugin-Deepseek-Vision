@@ -43,7 +43,8 @@ owns provider protocol translation, transport, retry, and credential policy.
 The CPAMC form exposes `vision_model`, `language`, global in-flight vision
 requests, the emergency image ceiling, total timeout, the three cache controls,
 and a boolean `trace_enabled` switch. Their descriptions include bilingual
-defaults and validation ranges. Advanced size controls remain available through YAML.
+defaults; key integer controls also state their validation ranges. Advanced
+size controls remain available through YAML.
 
 ## Full-context debug trace
 
@@ -69,10 +70,10 @@ Trace open/write/rotation failures never reject configuration or change a
 request result. The plugin disables tracing and emits one ordinary host warning
 for the failed generation.
 
-All deprecated fields from earlier builds, including `vision_backend`,
-`vision_base_url`, `vision_api_key_env`, retry, concurrency, and cache fields,
-are accepted only for decoding and unconditionally ignored. Configure the
-actual model/provider in CLIProxyAPI.
+Deprecated `vision_backend`, `vision_base_url`, `vision_api_key_env`,
+`per_call_timeout_seconds`, `retry_max_attempts`, `max_concurrency`,
+`cache_size`, and `cache_ttl_seconds` fields are accepted only for decoding and
+unconditionally ignored. Configure the actual model/provider in CLIProxyAPI.
 
 Each runtime generation owns an LRU using the configured capacity and TTLs.
 Keys hash the ordered prompt-group image references, model, normalized language,
@@ -112,4 +113,5 @@ final Model in target_models
 The compact path, unknown image references and unsupported request shapes do not
 silently pass an image through: unsupported images terminate with a client
 error, while a VLM failure terminates with HTTP 502. A successful rewrite is
-idempotent and no original image URL/data URI remains in the forwarded body.
+idempotent, removes every discovered `input_image` block and reference from its
+original structured position, and verifies that no image block remains.

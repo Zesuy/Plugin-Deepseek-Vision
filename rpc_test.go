@@ -122,7 +122,7 @@ func TestLifecycleWithIncompleteConfigKeepsRegistrationMetadata(t *testing.T) {
 
 func TestRegistrationUsesOverridableVersionVariable(t *testing.T) {
 	original := pluginVersion
-	pluginVersion = "0.1.0-test-override"
+	pluginVersion = "0.1.1-test-override"
 	defer func() { pluginVersion = original }()
 	if got := pluginRegistration().Metadata.Version; got != pluginVersion {
 		t.Fatalf("registration version = %q, want %q", got, pluginVersion)

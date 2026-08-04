@@ -1,5 +1,5 @@
 PLUGIN_NAME := deepseek-vision
-PLUGIN_VERSION := 0.1.0
+PLUGIN_VERSION := 0.1.1
 
 .PHONY: test race vet build verify-version-override clean
 

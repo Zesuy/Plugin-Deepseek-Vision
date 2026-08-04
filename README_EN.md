@@ -1,153 +1,228 @@
+<div align="center">
+
 # deepseek-vision
 
-> 🌐 Documentation: [简体中文](README.md) | **English**
+### Reliable image understanding for text-only DeepSeek models in CLIProxyAPI
 
-`deepseek-vision` is a CLIProxyAPI v7 native plugin that makes image-bearing
-OpenAI Responses requests usable with DeepSeek models that do not accept
-images. After CLIProxyAPI resolves an alias, the plugin handles only
-`/v1/responses` requests whose final model is `deepseek-v4-flash` by default;
-additional targets require explicit configuration.
-It sends each image once to an OpenAI-compatible VLM
-(default: `gpt-5.6-luna`), then replaces the image with a text visual analysis
-before the DeepSeek upstream request is sent.
+`deepseek-vision` is a native **CLIProxyAPI v7** request-preprocessing plugin. It uses a vision model already available
+through the host, turns all images in one prompt into a joint visual analysis, and lets DeepSeek continue with text.
 
-The currently available and release-tested DeepSeek target is
-`deepseek-v4-flash`. `deepseek-v4-pro` is not required for this release, is not
-probed by release acceptance, and remains pending upstream Responses availability.
+[![Release](https://img.shields.io/badge/release-v0.1.1-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.113-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
+[![Platform](https://img.shields.io/badge/platform-Linux%20amd64-FCC624?logo=linux&logoColor=black)](docs/limitations.md)
+[![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
-The plugin is strict for eligible Responses image requests: if the VLM call
-fails, the original request is stopped with HTTP 502 and the unprocessed image
-is not forwarded. It never implements a separate executor or response-stream
-transformer; unsupported protocols retain the host's normal handling.
+[简体中文](README.md) · **English** · [Installation](docs/installation.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md)
 
-The support boundary is deliberately narrow: interception requires
-`SourceFormat == "openai-response"`, metadata `request_path == "/v1/responses"`,
-and a final model listed in `target_models`. Anthropic Messages and Chat
-Completions image conversion are not implemented; those source protocols are
-outside this contract and are left to the host's normal handling.
+</div>
+
+---
+
+Text-only DeepSeek models cannot consume `input_image` blocks from OpenAI Responses requests. After CLIProxyAPI has
+completed authentication, alias resolution, and final-model selection, this plugin asks a vision model to understand
+the images and transparently replaces them with plain-text analysis. DeepSeek receives the original task plus the
+visual information, but never receives image blocks it cannot read.
+
+> [!IMPORTANT]
+> This is not another proxy, model provider, or protocol-conversion layer. The plugin has no extra endpoint or API-key
+> setting. CLIProxyAPI continues to own model routing, credentials, protocol translation, transport, retries, and
+> provider rate-limit policy.
+
+## What v0.1.1 provides
+
+| Capability | Behavior |
+| --- | --- |
+| **Native host execution** | Calls `host.model.execute` with the configured `vision_model`, reusing host routing and credentials |
+| **Prompt-level multi-image analysis** | Sends ordered images from one content/function-output item in one VLM call, preserving comparisons and progression |
+| **Atomic transparent rewrite** | Replaces images with numbered markers and one joint analysis only after every group succeeds |
+| **Global backpressure** | `max_inflight_vision_requests` bounds process-wide work; excess groups queue instead of being rejected |
+| **Adaptive splitting** | Keeps normal multi-image prompts intact and splits in order only after an explicit host 413 |
+| **Cache and deduplication** | Coalesces identical work in one request and reuses derived analysis from a configurable TTL LRU |
+| **Non-vision model notice** | Tells DeepSeek that attachments are already analyzed and must not be reopened with `view_image` |
+| **Stable configuration lifecycle** | Empty or invalid edits do not unregister the plugin; the last valid runtime and form remain available |
+| **Full diagnostic trace** | Optionally captures context, grouping, VLM calls, cache decisions, and rewritten requests for debugging |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["OpenAI Responses request"] --> B["CLIProxyAPI auth, alias and model resolution"]
+    B --> C{"Protocol, path and final model match?"}
+    C -- "No" --> D["Normal host handling"]
+    C -- "Yes" --> E["Scan visible history and group by prompt"]
+    E --> F["One joint VLM analysis per group"]
+    F --> G{"All analysis and validation succeeds?"}
+    G -- "No" --> H["Fail closed; no original images forwarded"]
+    G -- "Yes" --> I["Write markers and joint analysis"]
+    I --> J["Verify no input_image remains"]
+    J --> K["DeepSeek continues reasoning"]
+```
+
+Three screenshots attached to one prompt normally produce one vision-model call. Their order and up to 2,000
+characters of associated prompt text are preserved so the VLM can explain each image, transcribe visible text, and
+describe relationships between them. The rewritten item resembles:
+
+```text
+[Image 1 — already analyzed; the target model cannot read this attachment directly]
+[Image 2 — already analyzed; the target model cannot read this attachment directly]
+[Image 3 — already analyzed; the target model cannot read this attachment directly]
+
+[Vision preprocessing notice: use the supplied analysis and do not reopen these attachments with view_image]
+[Images 1, 2, 3 — Joint visual analysis]
+<per-image content, visible text, differences, and relationships>
+```
+
+The VLM prompt asks for faithful transcription, explicit illegible markers, and cross-image relationships. It treats
+instructions in images and user context as untrusted data. Matching Codex temporary attachment paths are also removed
+so the non-vision target model does not try to open the consumed images again.
+
+## Support boundary
+
+All three conditions must match:
+
+```text
+SourceFormat == "openai-response"
+request_path == "/v1/responses"
+final Model in target_models
+```
+
+| Scenario | v0.1.1 |
+| --- | --- |
+| URL/data-URI `input_image` in `input[].content[]` | ✅ |
+| `input_image` in array-form `function_call_output.output[]` | ✅ |
+| String-form `function_call_output.output` | ✅ preserved unchanged |
+| Multiple images and visible historical turns in the request | ✅ |
+| `stream: true` | ✅ preprocessing completes before streaming |
+| Default target `deepseek-v4-flash` | ✅ release-tested |
+| `deepseek-v4-pro` | ⚠️ opt in and verify upstream Responses availability |
+| `/v1/responses/compact` and other models | ➡️ pass through |
+| Chat Completions and Anthropic Messages | ❌ no conversion |
+| Images represented only by `file_id` | ❌ 422 |
+| Server-side history hidden behind `previous_response_id` | ❌ not visible to the plugin |
 
 ## Quick start
 
-1. Build the Linux/amd64 package on a Linux/amd64 host (Go 1.26, CGO and a C
-   compiler are required):
+### 1. Install v0.1.1
 
-   ```bash
-   VERSION=0.1.0 ./scripts/package.sh
-   ./scripts/checksum.sh
-   ```
+Download `deepseek-vision_0.1.1_linux_amd64.zip` from
+[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases), verify it, and install the only dynamic
+library in the manual plugin directory:
 
-2. For manual installation, keep exactly one unversioned library under the
-   CLIProxyAPI plugin root. Remove stale versioned candidates before extracting:
+```bash
+plugin_dir=plugins/linux/amd64
+mkdir -p "$plugin_dir"
+find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
+rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
+unzip -o deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
+(cd "$plugin_dir" && sha256sum -c checksums.txt)
+```
 
-   ```bash
-   plugin_dir=plugins/linux/amd64
-   mkdir -p "$plugin_dir"
-   find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
-   rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
-   unzip -o dist/deepseek-vision_0.1.0_linux_amd64.zip -d "$plugin_dir"
-   test "$(find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision*.so' | wc -l)" -eq 1
-   (cd "$plugin_dir" && sha256sum -c checksums.txt)
-   ```
+Manual mode requires `plugins/linux/amd64/deepseek-vision.so` with no stale versioned `.so` beside it. See the
+[installation guide](docs/installation.md) for Store mode, Docker, upgrades, and rollback. Restart CLIProxyAPI after
+replacing the library.
 
-   The active path must be `plugins/linux/amd64/deepseek-vision.so`; do not
-   leave `deepseek-vision-v*.so` files beside it. Store-managed installations
-   instead use `deepseek-vision-vX.Y.Z.so` and pin the same `X.Y.Z` under
-   `plugins.configs.deepseek-vision.store.version`. See
-   [`docs/installation.md`](docs/installation.md) for active-path checks and
-   upgrade/rollback procedures.
+### 2. Configure
 
-3. Copy [`config.example.yaml`](config.example.yaml) to the CLIProxyAPI
-   configuration location. The plugin reuses a vision-capable model and
-   credentials already configured in CLIProxyAPI, so it needs no separate
-   endpoint, API key, or Docker environment variable.
+First configure a vision-capable model in CLIProxyAPI. The plugin defaults to `gpt-5.6-luna`:
 
-4. Start CLIProxyAPI with its plugin root set to `./plugins`. A ready-to-edit
-   Docker Compose example is in [`docker/docker-compose.example.yml`](docker/docker-compose.example.yml).
+```yaml
+plugins:
+  enabled: true
+  configs:
+    deepseek-vision:
+      enabled: true
+      priority: 100
+      target_models:
+        - deepseek-v4-flash
 
-The default vision model is `gpt-5.6-luna`; set `vision_model` to any
-vision-capable model available through CLIProxyAPI. CLIProxyAPI owns provider
-protocol translation, routing, credentials, transport, and retry policy.
+      vision_model: gpt-5.6-luna
+      language: en
+      max_inflight_vision_requests: 4
+      emergency_max_images_per_request: 256
+      request_timeout_seconds: 120
+
+      analysis_cache_size: 128
+      analysis_cache_ttl_seconds: 900
+      analysis_url_cache_ttl_seconds: 120
+      trace_enabled: false
+```
+
+The CPAMC form exposes common values as enum, integer, and boolean fields. Bilingual descriptions state defaults and
+give ranges for key integer controls. Advanced
+body, image-reference, response, and output limits remain available in YAML. See
+[`config.example.yaml`](config.example.yaml) and the [configuration reference](docs/configuration.md).
+
+### 3. Verify registration
+
+```bash
+curl -fsS \
+  -H 'Authorization: Bearer <management-key>' \
+  http://127.0.0.1:<management-port>/v0/management/plugins \
+  | jq '.plugins[]
+      | select(.id == "deepseek-vision")
+      | {path, registered, effective_enabled, metadata}'
+```
+
+`registered` and `effective_enabled` should both be `true`, the active path should be unique, and
+`metadata.version` should be `0.1.1`.
+
+## Important configuration
+
+| Field | Default | Purpose |
+| --- | ---: | --- |
+| `target_models` | `deepseek-v4-flash` | Final models eligible for visual preprocessing |
+| `vision_model` | `gpt-5.6-luna` | Vision model already configured in CLIProxyAPI |
+| `language` | `zh` | `zh`, `en`, or `auto` |
+| `max_inflight_vision_requests` | `4` | Process-wide prompt-group calls, range 1–16 |
+| `emergency_max_images_per_request` | `256` | Last-resort unique-image ceiling, not a normal batch size |
+| `request_timeout_seconds` | `120` | Total preprocessing deadline including queueing |
+| `analysis_cache_size` | `128` | Derived-analysis entries; `0` disables cross-request reuse |
+| `analysis_cache_ttl_seconds` | `900` | Data-URI analysis TTL in seconds |
+| `analysis_url_cache_ttl_seconds` | `120` | URL-image analysis TTL in seconds |
+| `trace_enabled` | `false` | Full plaintext diagnostic trace; enable temporarily |
+
+Cache keys include ordered image references, the complete prompt, vision model, and normalized language. Entries store
+only an irreversible hash key and derived text, not source images or references. Reconfigure/restart begins a new cache
+generation.
+
+## Errors and diagnostics
+
+Eligible image requests fail closed:
+
+| HTTP | Meaning |
+| ---: | --- |
+| `400` | Invalid Responses JSON or supported input structure |
+| `413` | Request body, image reference, ABI admission, or unique-image emergency ceiling (default 256) exceeded |
+| `422` | Unsupported image source such as `file_id` only |
+| `502` | Vision-model failure, timeout, invalid response, or final rewrite verification failure |
+
+Ordinary 413 errors emit a host `host.log` warning with the limit kind, actual value, maximum, and configuration
+generation, never request or image content.
+
+For difficult multi-turn failures, temporarily set `trace_enabled: true`. It writes:
+
+```text
+logs/deepseek-vision-trace/events.jsonl
+logs/deepseek-vision-trace/requests/<request-bundle>/
+```
+
+Each bundle includes the exact inbound body, image URLs/data URIs, discovery positions, prompt groups, cache plan, VLM
+requests/responses, parsed output, rewritten body, and final status. Credential-like headers and metadata are redacted,
+but image and conversation data remain plaintext. Protect the directory, disable tracing after reproduction, and remove
+the retained files. Docker deployments must mount `/CLIProxyAPI/logs` to the host.
 
 ## Build and release
 
-`scripts/package.sh` produces a deterministic ZIP with both
-`deepseek-vision.so` and an embedded `checksums.txt` at the archive root. The
-companion `dist/checksums.txt` records the archive SHA-256. `scripts/package-smoke.sh`
-builds in a temporary directory and verifies ZIP members, permissions,
-checksums, ABI symbols and obvious credential markers without leaving files in
-the repository. Python's `zipfile` module is used, so the host does not need a
-`zip` executable.
-
-For another host, use the BuildKit artifact stage:
+Linux amd64 source builds require Go 1.26, CGO, a C compiler, `python3`, `nm`, `strings`, and `sha256sum`:
 
 ```bash
-docker build --file Dockerfile.plugin --build-arg VERSION=0.1.0 \
-  --output type=local,dest=./plugins/linux/amd64 .
+VERSION=0.1.1 ./scripts/package.sh
+./scripts/checksum.sh
 ```
 
-GitHub Actions runs tests, race detection, vet, contract checks, C ABI builds
-and package verification on every pull request. A `v*.*.*` tag publishes the
-Linux/amd64 ZIP and checksums; no VLM or upstream API key is present in CI or
-release assets.
-
-## Runtime behavior
-
-- Gate: `SourceFormat == "openai-response"`, metadata path exactly
-  `/v1/responses`, and final model in the explicitly configured target list
-  (the default list contains only `deepseek-v4-flash`).
-- `/v1/responses/compact`, other APIs and other models pass through unchanged.
-- The visible `input[]` array is scanned in full. Images in earlier
-  conversation turns retained in the request (including images left during a
-  Codex/Luna turn) and images in the current turn are converted together; the
-  original image blocks and their references are removed only after every
-  analysis succeeds. A `previous_response_id` is only an identifier:
-  server-side history hidden behind it is not included in this callback and
-  cannot be fetched or rewritten by the plugin.
-- All images in one content/function-output prompt item are sent to Luna in one
-  ordered multi-image host call. Their positions become numbered text markers,
-  and one joint analysis is appended to that prompt item. A fixed notice tells
-  the non-vision target model to use that analysis instead of reopening the
-  consumed attachments with `view_image`; matching Codex temporary paths are
-  removed from the rewritten prompt.
-- Identical ordered image-group/model/language/full-prompt work is deduplicated
-  within one request and reused across requests through a configurable TTL cache. Defaults
-  are 128 entries, 15 minutes for data URIs, and 2 minutes for URLs;
-  reconfigure starts a fresh cache.
-- Host vision calls use a configurable global in-flight bound; excess prompt
-  groups queue. A high emergency unique-image ceiling and body/reference/response
-  sizes remain bounded together with the total preprocessing deadline. Explicit
-  upstream 413 responses split multi-image groups in order.
-- Invalid or incomplete configuration edits never unregister the plugin. The
-  last known-good runtime remains active; if there is no valid runtime yet,
-  targeted image requests fail closed while the configuration UI stays
-  available.
-- For an eligible Responses request, malformed JSON returns 400, unsupported
-  image references return 422, configured size limits return 413 with the
-  rejected limit category, and VLM,
-  timeout, or rewrite failures return 502. Failures terminate the request and
-  never fall back to forwarding an original image; non-eligible protocols and
-  models retain pass-through behavior.
-- Every 413 emits one content-free warning through the host's `host.log`, tied
-  to the request ID when available. It records only the limit kind, actual and
-  maximum values, active size settings, and configuration generation.
-- For difficult multi-turn diagnosis, `trace_enabled: true` writes a plaintext
-  event index and per-request bundle under `logs/deepseek-vision-trace/`. It
-  includes the exact inbound body, image URLs/data URIs, prompt groups/context, cache
-  plan, VLM requests/responses, and rewritten body. Credential headers and
-  metadata are still redacted. Treat this directory as a full copy of user
-  data and enable it only temporarily.
-- If the runtime is unavailable before normal discovery can run, a targeted
-  Responses request with malformed or image-shaped input is conservatively
-  terminated with 502; unrelated models still pass through.
-- `stream: true` is supported because preprocessing finishes before the host
-  starts the response stream.
-
-See [`docs/contracts.md`](docs/contracts.md),
-[`docs/configuration.md`](docs/configuration.md),
-[`docs/installation.md`](docs/installation.md) and
-[`docs/security.md`](docs/security.md) for the full operational contract.
-
-## Development
+This produces reproducible `dist/deepseek-vision_0.1.1_linux_amd64.zip` and `dist/checksums.txt`. Every PR runs:
 
 ```bash
 go test ./...
@@ -157,11 +232,49 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-The repository intentionally contains no API keys, captured user payloads or
-generated dynamic libraries.
+Pushing tag `v0.1.1` makes the Release workflow repeat validation and publish the ZIP and checksum. CI and release
+assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
+
+## Current limitations
+
+- Official artifacts currently target Linux amd64; other platforms require a native build and matching host.
+- Only OpenAI Responses `/v1/responses` is rewritten; no other source protocol receives image conversion.
+- VLM preprocessing completes before streaming, so it adds time to first byte.
+- The cache is process-local and is not shared across CLIProxyAPI instances.
+- Remote URLs are fetched by the selected vision provider; deployments still need DNS, egress, and allowlist policy.
+- `deepseek-v4-pro` is not a v0.1.1 release-acceptance target.
+
+See [limitations](docs/limitations.md) and [security](docs/security.md) for the full boundary.
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [Installation](docs/installation.md) | Manual / Store / Docker install, upgrade, and rollback |
+| [Configuration](docs/configuration.md) | Fields, defaults, validation, cache, and trace |
+| [Contracts](docs/contracts.md) | ABI, Responses input/output, and error contract |
+| [Architecture](docs/architecture.md) | Data flow, module ownership, and host boundary |
+| [Security](docs/security.md) | Credentials, network, prompt injection, and failure safety |
+| [Troubleshooting](docs/troubleshooting.md) | Registration, configuration, 413 / 502, trace, and container permissions |
+| [Testing](docs/testing.md) | Unit, race, package, and host E2E validation |
+| [Changelog](CHANGELOG.md) | Release contents and validated boundary |
+
+## Acknowledgements
+
+The README organization and visual presentation were inspired by
+[Anionex/codex-vision-proxy](https://github.com/Anionex/codex-vision-proxy). The projects use different integration
+models; this repository focuses on a CLIProxyAPI v7 native plugin and host capability reuse.
 
 ## License
 
-This project is licensed under the MIT License. See [`LICENSE`](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
 
-Copyright (c) 2026 Zesuy
+---
+
+<div align="center">
+
+If this project helps you, a Star is always appreciated ⭐
+
+Made with care by [Zesuy](https://github.com/Zesuy)
+
+</div>

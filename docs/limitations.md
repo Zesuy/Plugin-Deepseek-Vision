@@ -48,4 +48,4 @@
   and must not be left enabled as normal production logging.
 - `deepseek-v4-pro` is retained as a future-supported target, but its Responses
   availability currently depends on the upstream service. It is not required,
-  probed, or release-tested in v0.1.0; real validation uses `deepseek-v4-flash`.
+  probed, or release-tested in v0.1.1; real validation uses `deepseek-v4-flash`.

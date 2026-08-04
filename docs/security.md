@@ -4,8 +4,9 @@
 
 - The plugin reuses a model and credential already configured in CLIProxyAPI;
   it has no key field, environment-variable credential, or external backend.
-- The plugin does not log Authorization headers, complete endpoint URLs,
-  image data URIs or upstream response bodies.
+- Ordinary host diagnostics do not log Authorization headers, complete endpoint
+  URLs, image data URIs, or upstream response bodies. The explicitly enabled
+  plaintext trace has the broader data boundary documented below.
 - The plugin caches only derived analysis text and SHA-256 keys. It never keeps
   raw image bytes or the original image reference in cache entries; URL entries
   use a shorter TTL because their content may change.

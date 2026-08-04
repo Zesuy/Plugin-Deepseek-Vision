@@ -86,7 +86,7 @@ uses `previous_response_id`, remember that server-side history remains hidden
 from this callback; only images present in the current visible `input[]` can be
 rewritten.
 
-For v0.1.0, use `deepseek-v4-flash` when checking a real upstream. The
+For v0.1.1, use `deepseek-v4-flash` when checking a real upstream. The
 `deepseek-v4-pro` entry is future-supported configuration only; it is not a
 required or probed service in this release.
 

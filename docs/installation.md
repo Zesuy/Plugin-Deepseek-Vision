@@ -13,14 +13,14 @@ Manual mode is intentionally unambiguous: the directory contains exactly one
 `deepseek-vision.so` and no `deepseek-vision-v*.so` files.
 
 ```bash
-VERSION=0.1.0 ./scripts/package.sh
+VERSION=0.1.1 ./scripts/package.sh
 ./scripts/checksum.sh
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
 # Remove stale candidates for this plugin ID before installing the new file.
 find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
-unzip -o dist/deepseek-vision_0.1.0_linux_amd64.zip -d "$plugin_dir"
+unzip -o dist/deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
 test -f "$plugin_dir/deepseek-vision.so"
 test "$(find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision*.so' | wc -l)" -eq 1
 (cd "$plugin_dir" && sha256sum -c checksums.txt)
@@ -42,7 +42,7 @@ The active `path` must end in `/linux/amd64/deepseek-vision.so` and
 ### Store/versioned mode (pinned version)
 
 Store mode uses a versioned filename, for example
-`deepseek-vision-v0.1.0.so`, and pins the host selection with `store.version`.
+`deepseek-vision-v0.1.1.so`, and pins the host selection with `store.version`.
 The store source may be the built-in registry or an explicitly configured
 source; the source value below is illustrative.
 
@@ -55,7 +55,7 @@ plugins:
       priority: 100
       store:
         source: <configured-store-source>
-        version: "0.1.0"
+        version: "0.1.1"
 ```
 
 Install the versioned asset through the CLIProxyAPI plugin store (preferred).
@@ -65,15 +65,15 @@ payload while installing it:
 ```bash
 plugin_dir=plugins/linux/amd64
 tmp_dir=$(mktemp -d)
-unzip -q dist/deepseek-vision_0.1.0_linux_amd64.zip -d "$tmp_dir"
+unzip -q dist/deepseek-vision_0.1.1_linux_amd64.zip -d "$tmp_dir"
 (cd "$tmp_dir" && sha256sum -c checksums.txt)
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir"/deepseek-vision-v*.so
-install -m 0755 "$tmp_dir/deepseek-vision.so" "$plugin_dir/deepseek-vision-v0.1.0.so"
+install -m 0755 "$tmp_dir/deepseek-vision.so" "$plugin_dir/deepseek-vision-v0.1.1.so"
 rm -rf "$tmp_dir"
 ```
 
 Keep `store.version` equal to the filename version (the host accepts either
-`0.1.0` or `v0.1.0` in configuration and normalizes it). Do not leave an
+`0.1.1` or `v0.1.1` in configuration and normalizes it). Do not leave an
 unversioned `deepseek-vision.so` beside a pinned version.
 
 After changing `store.version`, restart or trigger the host's plugin reload and
@@ -89,8 +89,8 @@ curl -fsS -H 'Authorization: Bearer <management-key>' \
 ```
 
 The active path must end in the pinned
-`/linux/amd64/deepseek-vision-v0.1.0.so`, the metadata version must be
-`0.1.0`, and the config response must show `store.version: "0.1.0"`.
+`/linux/amd64/deepseek-vision-v0.1.1.so`, the metadata version must be
+`0.1.1`, and the config response must show `store.version: "0.1.1"`.
 
 Copy `config.example.yaml` into the CLIProxyAPI configuration directory. Image
 analysis uses a vision-capable model already configured in CLIProxyAPI, so the
@@ -105,7 +105,7 @@ the library directly into the host plugin tree:
 ```bash
 mkdir -p plugins/linux/amd64
 docker build --file Dockerfile.plugin --target artifact \
-  --build-arg VERSION=0.1.0 \
+  --build-arg VERSION=0.1.1 \
   --output type=local,dest=./plugins/linux/amd64 .
 ```
 
