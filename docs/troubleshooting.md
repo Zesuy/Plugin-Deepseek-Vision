@@ -66,7 +66,9 @@ curl -fsS -H 'Authorization: Bearer <management-key>' \
       | {registered, effective_enabled, config_fields}'
 ```
 
-A current binary reports three essential fields: backend, model, and language.
+A current binary reports nine fields: model, language, global in-flight vision
+requests, emergency image ceiling, total timeout, three cache controls, and the
+plaintext trace switch.
 If `registered` remains `false`, restart
 CLIProxyAPI after replacing the library and inspect the plugin registration
 error in the host log; an old binary or failed ABI load cannot publish field
@@ -107,13 +109,20 @@ plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
 
 ## Slow or rejected requests
 
-Reduce `max_images_per_request` or increase the bounded total timeout only after
-checking VLM latency. A 413 response now distinguishes request-body,
-image-reference and image-count limits. Check the matching CLIProxyAPI warning
+Adjust `max_inflight_vision_requests` or increase the bounded total timeout only
+after checking VLM latency. Prompt groups queue instead of being rejected when
+all callback slots are occupied. A 413 response distinguishes request-body,
+image-reference and emergency unique-image limits. Check the matching CLIProxyAPI warning
 from `host.log` for `limit_kind`, `actual`, `maximum`, active size settings and
 `config_generation`; ABI admission warnings include their byte budget and
 in-flight usage. This ordinary host-log warning never contains image data or
 credentials. Provider retry behavior is controlled by CLIProxyAPI.
+
+If the target model nevertheless calls `view_image`, verify that the rewritten
+prompt contains the fixed vision-preprocessing notice and no local attachment
+path. A successful rich `view_image` tool result is an array and will be
+converted again; a string result (including a tool error) is preserved as a
+normal Responses function output and must not be rejected by the plugin.
 
 For a multi-turn request whose ordinary 413 warning is insufficient, enable:
 
@@ -122,7 +131,8 @@ trace_enabled: true
 ```
 
 Reproduce once, then inspect `logs/deepseek-vision-trace/events.jsonl` and the
-referenced request bundle. `20-discovery-error.json` includes total, unique,
-duplicate, last-image-item, earlier-item, content, and function-output image
-counts. The inbound body and image references are preserved in plaintext, so
+referenced request bundle. `20-discovery.json` includes total, unique,
+duplicate, prompt-group, last-image-item, earlier-item, content, and
+function-output image counts. VLM artifacts show each multi-image call and any
+413 split batches. The inbound body and image references are preserved in plaintext, so
 disable tracing and remove the bundle after diagnosis.

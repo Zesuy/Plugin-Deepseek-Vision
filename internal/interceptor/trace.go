@@ -10,14 +10,15 @@ import (
 )
 
 type cacheTraceRecord struct {
-	ImageNumber int    `json:"image_number"`
-	Disposition string `json:"disposition"`
-	JobID       int    `json:"job_id,omitempty"`
-	CacheKey    string `json:"cache_key"`
+	GroupID      int    `json:"group_id"`
+	ImageNumbers []int  `json:"image_numbers"`
+	Disposition  string `json:"disposition"`
+	JobID        int    `json:"job_id,omitempty"`
+	CacheKey     string `json:"cache_key"`
 }
 
 type cacheTracePlan struct {
-	Images              []cacheTraceRecord `json:"images"`
+	Groups              []cacheTraceRecord `json:"groups"`
 	CacheHits           int                `json:"cache_hits"`
 	RequestDeduplicates int                `json:"request_deduplicates"`
 	VLMJobs             int                `json:"vlm_jobs"`
@@ -52,16 +53,17 @@ func (r *Runtime) startFullTrace(state *runtimeState, req pluginapi.RequestInter
 			"generation":    state.generation,
 			"target_models": append([]string(nil), state.cfg.TargetModels...),
 			"vision_model":  state.cfg.VisionModel, "language": state.cfg.Language,
-			"request_timeout":           state.cfg.RequestTimeout.String(),
-			"max_images_per_request":    state.cfg.MaxImagesPerRequest,
-			"max_request_bytes":         state.cfg.MaxRequestBytes,
-			"max_image_reference_bytes": state.cfg.MaxImageReferenceBytes,
-			"max_response_bytes":        state.cfg.MaxResponseBytes,
-			"max_result_chars":          state.cfg.MaxResultChars,
-			"analysis_cache_size":       state.cfg.AnalysisCacheSize,
-			"analysis_cache_ttl":        state.cfg.AnalysisCacheTTL.String(),
-			"analysis_url_cache_ttl":    state.cfg.URLAnalysisCacheTTL.String(),
-			"trace_enabled":             state.cfg.TraceEnabled,
+			"request_timeout":                  state.cfg.RequestTimeout.String(),
+			"emergency_max_images_per_request": state.cfg.EmergencyMaxImagesPerRequest,
+			"max_inflight_vision_requests":     state.cfg.MaxInflightVisionRequests,
+			"max_request_bytes":                state.cfg.MaxRequestBytes,
+			"max_image_reference_bytes":        state.cfg.MaxImageReferenceBytes,
+			"max_response_bytes":               state.cfg.MaxResponseBytes,
+			"max_result_chars":                 state.cfg.MaxResultChars,
+			"analysis_cache_size":              state.cfg.AnalysisCacheSize,
+			"analysis_cache_ttl":               state.cfg.AnalysisCacheTTL.String(),
+			"analysis_url_cache_ttl":           state.cfg.URLAnalysisCacheTTL.String(),
+			"trace_enabled":                    state.cfg.TraceEnabled,
 		},
 	}
 	session.JSON("00-metadata.json", metadata)
@@ -89,6 +91,7 @@ func traceDiscovery(session *tracelog.Session, plan *responses.Plan) {
 	session.JSON("20-discovery.json", map[string]any{
 		"summary": plan.ImageCountDetails(),
 		"images":  images,
+		"groups":  plan.Groups(),
 	})
 	session.Event("discovery_completed", plan.ImageCountDetails())
 }

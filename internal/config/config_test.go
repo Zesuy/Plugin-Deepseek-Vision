@@ -18,6 +18,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.AnalysisCacheSize != 128 || cfg.AnalysisCacheTTL != 15*time.Minute || cfg.URLAnalysisCacheTTL != 2*time.Minute {
 		t.Fatalf("cache defaults = %#v", cfg)
 	}
+	if cfg.MaxInflightVisionRequests != 4 || cfg.EmergencyMaxImagesPerRequest != 256 {
+		t.Fatalf("vision scheduling defaults = %#v", cfg)
+	}
 	if cfg.TraceEnabled {
 		t.Fatal("full-context trace must default to disabled")
 	}
@@ -148,13 +151,24 @@ func TestTargetModelsAreCanonicalized(t *testing.T) {
 	}
 }
 
+func TestLegacyImageLimitIsIgnored(t *testing.T) {
+	cfg, err := ParseYAML([]byte("max_images_per_request: 4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EmergencyMaxImagesPerRequest != DefaultEmergencyMaxImages {
+		t.Fatalf("legacy field changed emergency limit: %d", cfg.EmergencyMaxImagesPerRequest)
+	}
+}
+
 func TestParseRejectsUnknownAndInvalidValues(t *testing.T) {
 	for _, raw := range []string{
 		"unknown_field: true",
 		"vision_model: ''",
 		"language: ''",
 		"request_timeout_seconds: 0",
-		"max_images_per_request: 0",
+		"emergency_max_images_per_request: 15",
+		"max_inflight_vision_requests: 0",
 		"max_request_bytes: 1",
 		"max_image_reference_bytes: 1",
 		"max_response_bytes: 1",

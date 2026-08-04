@@ -20,8 +20,9 @@ handling. Literal loopback/private/link-local image
 URLs are rejected; deployment DNS names still need an egress/allowlist policy.
 Prefer HTTPS for remote image references.
 
-The plugin sends the image reference and a bounded focus hint to the configured
-VLM. CLIProxyAPI chooses the provider for `vision_model`. Review retention,
+The plugin sends one prompt item's ordered image references and bounded text
+context to the configured VLM. CLIProxyAPI chooses the provider for
+`vision_model`. Review retention,
 access control and data residency of the chosen provider.
 
 ## Prompt injection and failure safety
@@ -30,9 +31,14 @@ Text visible in an image is untrusted data. The prompt explicitly asks the VLM
 not to follow instructions found inside the image. If any image analysis fails,
 the complete request is terminated before the DeepSeek executor receives it;
 partial rewrites and accidental original-image forwarding are not allowed.
+For successfully consumed Codex attachments, matching local temporary paths are
+removed and a fixed plugin-authored notice tells the non-vision target model to
+use the supplied analysis rather than invoke image/file tools on those paths.
 
-Keep `max_images_per_request` and body/reference limits small enough for the
-deployment. These are both resource controls and abuse boundaries.
+`max_inflight_vision_requests` bounds callback fan-out without rejecting normal
+multi-image prompts. `emergency_max_images_per_request` is a high, last-resort
+unique-image abuse boundary; body/reference limits remain independent byte
+boundaries. Provider retry and rate limiting remain host-owned.
 
 Configured-limit and ABI-admission rejections emit a structured warning through
 the host logger. Diagnostics are intentionally restricted to limit names,
@@ -42,7 +48,7 @@ references, request bodies, headers and credentials are never included.
 ## Opt-in plaintext trace
 
 `trace_enabled` deliberately changes the privacy boundary for debugging. It
-writes complete conversation bodies, image URLs/data URIs, focus hints, VLM
+writes complete conversation bodies, image URLs/data URIs, prompt-group context, VLM
 requests/responses, and rewritten bodies beneath
 `logs/deepseek-vision-trace/`. Credential-like header and metadata fields are
 still forcibly redacted, but image URLs may themselves contain signed query

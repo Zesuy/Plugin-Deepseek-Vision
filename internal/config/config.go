@@ -15,17 +15,18 @@ import (
 )
 
 const (
-	DefaultVisionModel       = "gpt-5.6-luna"
-	DefaultLanguage          = "zh"
-	DefaultRequestTimeoutSec = 120
-	DefaultMaxImages         = 4
-	DefaultMaxRequestBytes   = 20 * 1024 * 1024
-	DefaultMaxImageRefBytes  = 15 * 1024 * 1024
-	DefaultMaxResponseBytes  = 4 * 1024 * 1024
-	DefaultMaxResultChars    = 20_000
-	DefaultAnalysisCacheSize = 128
-	DefaultAnalysisCacheTTL  = 15 * 60
-	DefaultURLCacheTTL       = 2 * 60
+	DefaultVisionModel               = "gpt-5.6-luna"
+	DefaultLanguage                  = "zh"
+	DefaultRequestTimeoutSec         = 120
+	DefaultEmergencyMaxImages        = 256
+	DefaultMaxInflightVisionRequests = 4
+	DefaultMaxRequestBytes           = 20 * 1024 * 1024
+	DefaultMaxImageRefBytes          = 15 * 1024 * 1024
+	DefaultMaxResponseBytes          = 4 * 1024 * 1024
+	DefaultMaxResultChars            = 20_000
+	DefaultAnalysisCacheSize         = 128
+	DefaultAnalysisCacheTTL          = 15 * 60
+	DefaultURLCacheTTL               = 2 * 60
 	// MaxRequestBytesLimit is the largest raw Responses body accepted by
 	// configuration. The native ABI separately accounts for envelope overhead.
 	MaxRequestBytesLimit = 32 * 1024 * 1024
@@ -34,19 +35,20 @@ const (
 // Config is an immutable, validated runtime snapshot. Callers must treat
 // TargetModels as read-only.
 type Config struct {
-	TargetModels           []string
-	VisionModel            string
-	Language               string
-	RequestTimeout         time.Duration
-	MaxImagesPerRequest    int
-	MaxRequestBytes        int
-	MaxImageReferenceBytes int
-	MaxResponseBytes       int
-	MaxResultChars         int
-	AnalysisCacheSize      int
-	AnalysisCacheTTL       time.Duration
-	URLAnalysisCacheTTL    time.Duration
-	TraceEnabled           bool
+	TargetModels                 []string
+	VisionModel                  string
+	Language                     string
+	RequestTimeout               time.Duration
+	EmergencyMaxImagesPerRequest int
+	MaxInflightVisionRequests    int
+	MaxRequestBytes              int
+	MaxImageReferenceBytes       int
+	MaxResponseBytes             int
+	MaxResultChars               int
+	AnalysisCacheSize            int
+	AnalysisCacheTTL             time.Duration
+	URLAnalysisCacheTTL          time.Duration
+	TraceEnabled                 bool
 }
 
 // rawConfig mirrors the active YAML contract. Deprecated fields remain
@@ -57,19 +59,20 @@ type rawConfig struct {
 	Priority *int      `yaml:"priority"`
 	Store    yaml.Node `yaml:"store"`
 
-	TargetModels           []string `yaml:"target_models"`
-	VisionModel            string   `yaml:"vision_model"`
-	Language               string   `yaml:"language"`
-	RequestTimeoutSeconds  int      `yaml:"request_timeout_seconds"`
-	MaxImagesPerRequest    int      `yaml:"max_images_per_request"`
-	MaxRequestBytes        int      `yaml:"max_request_bytes"`
-	MaxImageReferenceBytes int      `yaml:"max_image_reference_bytes"`
-	MaxResponseBytes       int      `yaml:"max_response_bytes"`
-	MaxResultChars         int      `yaml:"max_result_chars"`
-	AnalysisCacheSize      int      `yaml:"analysis_cache_size"`
-	AnalysisCacheTTL       int      `yaml:"analysis_cache_ttl_seconds"`
-	URLAnalysisCacheTTL    int      `yaml:"analysis_url_cache_ttl_seconds"`
-	TraceEnabled           bool     `yaml:"trace_enabled"`
+	TargetModels                 []string `yaml:"target_models"`
+	VisionModel                  string   `yaml:"vision_model"`
+	Language                     string   `yaml:"language"`
+	RequestTimeoutSeconds        int      `yaml:"request_timeout_seconds"`
+	EmergencyMaxImagesPerRequest int      `yaml:"emergency_max_images_per_request"`
+	MaxInflightVisionRequests    int      `yaml:"max_inflight_vision_requests"`
+	MaxRequestBytes              int      `yaml:"max_request_bytes"`
+	MaxImageReferenceBytes       int      `yaml:"max_image_reference_bytes"`
+	MaxResponseBytes             int      `yaml:"max_response_bytes"`
+	MaxResultChars               int      `yaml:"max_result_chars"`
+	AnalysisCacheSize            int      `yaml:"analysis_cache_size"`
+	AnalysisCacheTTL             int      `yaml:"analysis_cache_ttl_seconds"`
+	URLAnalysisCacheTTL          int      `yaml:"analysis_url_cache_ttl_seconds"`
+	TraceEnabled                 bool     `yaml:"trace_enabled"`
 
 	// Deprecated host-client fields, accepted and unconditionally ignored.
 	VisionBackend         yaml.Node `yaml:"vision_backend"`
@@ -80,6 +83,7 @@ type rawConfig struct {
 	MaxConcurrency        yaml.Node `yaml:"max_concurrency"`
 	CacheSize             yaml.Node `yaml:"cache_size"`
 	CacheTTLSeconds       yaml.Node `yaml:"cache_ttl_seconds"`
+	MaxImagesPerRequest   yaml.Node `yaml:"max_images_per_request"`
 }
 
 type hostDocument struct {
@@ -248,8 +252,11 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	if raw.RequestTimeoutSeconds != 0 || present["request_timeout_seconds"] {
 		cfg.RequestTimeoutSeconds = raw.RequestTimeoutSeconds
 	}
-	if raw.MaxImagesPerRequest != 0 || present["max_images_per_request"] {
-		cfg.MaxImagesPerRequest = raw.MaxImagesPerRequest
+	if raw.EmergencyMaxImagesPerRequest != 0 || present["emergency_max_images_per_request"] {
+		cfg.EmergencyMaxImagesPerRequest = raw.EmergencyMaxImagesPerRequest
+	}
+	if raw.MaxInflightVisionRequests != 0 || present["max_inflight_vision_requests"] {
+		cfg.MaxInflightVisionRequests = raw.MaxInflightVisionRequests
 	}
 	if raw.MaxRequestBytes != 0 || present["max_request_bytes"] {
 		cfg.MaxRequestBytes = raw.MaxRequestBytes
@@ -284,19 +291,20 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 		return nil, err
 	}
 	return &Config{
-		TargetModels:           append([]string(nil), cfg.TargetModels...),
-		VisionModel:            strings.TrimSpace(cfg.VisionModel),
-		Language:               strings.TrimSpace(cfg.Language),
-		RequestTimeout:         time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
-		MaxImagesPerRequest:    cfg.MaxImagesPerRequest,
-		MaxRequestBytes:        cfg.MaxRequestBytes,
-		MaxImageReferenceBytes: cfg.MaxImageReferenceBytes,
-		MaxResponseBytes:       cfg.MaxResponseBytes,
-		MaxResultChars:         cfg.MaxResultChars,
-		AnalysisCacheSize:      cfg.AnalysisCacheSize,
-		AnalysisCacheTTL:       time.Duration(cfg.AnalysisCacheTTL) * time.Second,
-		URLAnalysisCacheTTL:    time.Duration(cfg.URLAnalysisCacheTTL) * time.Second,
-		TraceEnabled:           cfg.TraceEnabled,
+		TargetModels:                 append([]string(nil), cfg.TargetModels...),
+		VisionModel:                  strings.TrimSpace(cfg.VisionModel),
+		Language:                     strings.TrimSpace(cfg.Language),
+		RequestTimeout:               time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+		EmergencyMaxImagesPerRequest: cfg.EmergencyMaxImagesPerRequest,
+		MaxInflightVisionRequests:    cfg.MaxInflightVisionRequests,
+		MaxRequestBytes:              cfg.MaxRequestBytes,
+		MaxImageReferenceBytes:       cfg.MaxImageReferenceBytes,
+		MaxResponseBytes:             cfg.MaxResponseBytes,
+		MaxResultChars:               cfg.MaxResultChars,
+		AnalysisCacheSize:            cfg.AnalysisCacheSize,
+		AnalysisCacheTTL:             time.Duration(cfg.AnalysisCacheTTL) * time.Second,
+		URLAnalysisCacheTTL:          time.Duration(cfg.URLAnalysisCacheTTL) * time.Second,
+		TraceEnabled:                 cfg.TraceEnabled,
 	}, nil
 }
 
@@ -330,8 +338,11 @@ func validateRaw(raw rawConfig) error {
 	if raw.RequestTimeoutSeconds < 1 || raw.RequestTimeoutSeconds > 3600 {
 		return errors.New("request_timeout_seconds must be between 1 and 3600")
 	}
-	if raw.MaxImagesPerRequest < 1 || raw.MaxImagesPerRequest > 16 {
-		return errors.New("max_images_per_request must be between 1 and 16")
+	if raw.EmergencyMaxImagesPerRequest < 16 || raw.EmergencyMaxImagesPerRequest > 1024 {
+		return errors.New("emergency_max_images_per_request must be between 16 and 1024")
+	}
+	if raw.MaxInflightVisionRequests < 1 || raw.MaxInflightVisionRequests > 16 {
+		return errors.New("max_inflight_vision_requests must be between 1 and 16")
 	}
 	if raw.MaxRequestBytes < 1024 || raw.MaxRequestBytes > MaxRequestBytesLimit {
 		return errors.New("max_request_bytes must be between 1024 and 33554432")
@@ -361,37 +372,39 @@ type defaults = rawConfig
 
 func defaultRaw() defaults {
 	return defaults{
-		TargetModels:           []string{"deepseek-v4-flash"},
-		VisionModel:            DefaultVisionModel,
-		Language:               DefaultLanguage,
-		RequestTimeoutSeconds:  DefaultRequestTimeoutSec,
-		MaxImagesPerRequest:    DefaultMaxImages,
-		MaxRequestBytes:        DefaultMaxRequestBytes,
-		MaxImageReferenceBytes: DefaultMaxImageRefBytes,
-		MaxResponseBytes:       DefaultMaxResponseBytes,
-		MaxResultChars:         DefaultMaxResultChars,
-		AnalysisCacheSize:      DefaultAnalysisCacheSize,
-		AnalysisCacheTTL:       DefaultAnalysisCacheTTL,
-		URLAnalysisCacheTTL:    DefaultURLCacheTTL,
-		TraceEnabled:           false,
+		TargetModels:                 []string{"deepseek-v4-flash"},
+		VisionModel:                  DefaultVisionModel,
+		Language:                     DefaultLanguage,
+		RequestTimeoutSeconds:        DefaultRequestTimeoutSec,
+		EmergencyMaxImagesPerRequest: DefaultEmergencyMaxImages,
+		MaxInflightVisionRequests:    DefaultMaxInflightVisionRequests,
+		MaxRequestBytes:              DefaultMaxRequestBytes,
+		MaxImageReferenceBytes:       DefaultMaxImageRefBytes,
+		MaxResponseBytes:             DefaultMaxResponseBytes,
+		MaxResultChars:               DefaultMaxResultChars,
+		AnalysisCacheSize:            DefaultAnalysisCacheSize,
+		AnalysisCacheTTL:             DefaultAnalysisCacheTTL,
+		URLAnalysisCacheTTL:          DefaultURLCacheTTL,
+		TraceEnabled:                 false,
 	}
 }
 
 func defaultConfig() *Config {
 	d := defaultRaw()
 	return &Config{
-		TargetModels:           append([]string(nil), d.TargetModels...),
-		VisionModel:            d.VisionModel,
-		Language:               d.Language,
-		RequestTimeout:         time.Duration(d.RequestTimeoutSeconds) * time.Second,
-		MaxImagesPerRequest:    d.MaxImagesPerRequest,
-		MaxRequestBytes:        d.MaxRequestBytes,
-		MaxImageReferenceBytes: d.MaxImageReferenceBytes,
-		MaxResponseBytes:       d.MaxResponseBytes,
-		MaxResultChars:         d.MaxResultChars,
-		AnalysisCacheSize:      d.AnalysisCacheSize,
-		AnalysisCacheTTL:       time.Duration(d.AnalysisCacheTTL) * time.Second,
-		URLAnalysisCacheTTL:    time.Duration(d.URLAnalysisCacheTTL) * time.Second,
-		TraceEnabled:           d.TraceEnabled,
+		TargetModels:                 append([]string(nil), d.TargetModels...),
+		VisionModel:                  d.VisionModel,
+		Language:                     d.Language,
+		RequestTimeout:               time.Duration(d.RequestTimeoutSeconds) * time.Second,
+		EmergencyMaxImagesPerRequest: d.EmergencyMaxImagesPerRequest,
+		MaxInflightVisionRequests:    d.MaxInflightVisionRequests,
+		MaxRequestBytes:              d.MaxRequestBytes,
+		MaxImageReferenceBytes:       d.MaxImageReferenceBytes,
+		MaxResponseBytes:             d.MaxResponseBytes,
+		MaxResultChars:               d.MaxResultChars,
+		AnalysisCacheSize:            d.AnalysisCacheSize,
+		AnalysisCacheTTL:             time.Duration(d.AnalysisCacheTTL) * time.Second,
+		URLAnalysisCacheTTL:          time.Duration(d.URLAnalysisCacheTTL) * time.Second,
+		TraceEnabled:                 d.TraceEnabled,
 	}
 }

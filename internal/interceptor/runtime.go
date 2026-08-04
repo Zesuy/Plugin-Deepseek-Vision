@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,13 +32,88 @@ type AnalyzerFactory func(*config.Config) (vision.Analyzer, error)
 type DiagnosticFunc func(callbackID, level, message string, fields map[string]any)
 
 type runtimeState struct {
-	cfg        *config.Config
-	factory    AnalyzerFactory
-	cache      *analysisCache
-	generation uint64
-	once       sync.Once
-	analyzer   vision.Analyzer
-	err        error
+	cfg           *config.Config
+	factory       AnalyzerFactory
+	cache         *analysisCache
+	visionLimiter *visionLimiter
+	generation    uint64
+	once          sync.Once
+	analyzer      vision.Analyzer
+	err           error
+}
+
+type visionLimiter struct {
+	mu       sync.Mutex
+	limit    int
+	inflight int
+	changed  chan struct{}
+}
+
+func newVisionLimiter(limit int) *visionLimiter {
+	if limit < 1 {
+		limit = 1
+	}
+	return &visionLimiter{limit: limit, changed: make(chan struct{})}
+}
+
+func (l *visionLimiter) SetLimit(limit int) {
+	if l == nil {
+		return
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	l.mu.Lock()
+	l.limit = limit
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+func (l *visionLimiter) Acquire(ctx context.Context) error {
+	if l == nil {
+		return ErrRuntimeUnavailable
+	}
+	for {
+		l.mu.Lock()
+		if l.inflight < l.limit {
+			l.inflight++
+			l.mu.Unlock()
+			return nil
+		}
+		changed := l.changed
+		l.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+}
+
+func (l *visionLimiter) Release() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	if l.inflight > 0 {
+		l.inflight--
+	}
+	l.signalLocked()
+	l.mu.Unlock()
+}
+
+func (l *visionLimiter) Snapshot() (inflight, limit int) {
+	if l == nil {
+		return 0, 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inflight, l.limit
+}
+
+func (l *visionLimiter) signalLocked() {
+	close(l.changed)
+	l.changed = make(chan struct{})
 }
 
 func (s *runtimeState) getAnalyzer() (vision.Analyzer, error) {
@@ -60,6 +136,7 @@ type Runtime struct {
 	factory    AnalyzerFactory
 	diagnostic DiagnosticFunc
 	trace      *tracelog.Sink
+	limiter    *visionLimiter
 	generation uint64
 	// targetModels is retained across shutdown so the unavailable fallback can
 	// preserve the same model gate. Without this snapshot, a shutdown would
@@ -78,6 +155,7 @@ func NewRuntimeWithTrace(factory AnalyzerFactory, trace *tracelog.Sink, diagnost
 	runtime := &Runtime{
 		factory:      factory,
 		trace:        trace,
+		limiter:      newVisionLimiter(defaults.MaxInflightVisionRequests),
 		targetModels: append([]string(nil), defaults.TargetModels...),
 	}
 	if len(diagnostics) > 0 {
@@ -98,8 +176,12 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 	}
 	r.mu.Lock()
 	r.generation++
+	r.limiter.SetLimit(cfg.MaxInflightVisionRequests)
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
-	r.current = &runtimeState{cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize), generation: r.generation}
+	r.current = &runtimeState{
+		cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize),
+		visionLimiter: r.limiter, generation: r.generation,
+	}
 	r.shutdown = false
 	r.mu.Unlock()
 }
@@ -170,7 +252,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	defer cancel()
 
 	plan, planErr := responses.Discover(req.Body, responses.Options{
-		MaxImages:         cfg.MaxImagesPerRequest,
+		MaxImages:         cfg.EmergencyMaxImagesPerRequest,
 		MaxReferenceBytes: cfg.MaxImageReferenceBytes,
 		MaxBodyBytes:      cfg.MaxRequestBytes,
 		MaxResultChars:    cfg.MaxResultChars,
@@ -189,44 +271,49 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	}
 
 	images := plan.Images()
+	groups := plan.Groups()
 	traceDiscovery(traceSession, plan)
-	results := make([]string, len(images))
+	results := make([]string, len(groups))
 	type analysisJob struct {
 		id           int
 		key          string
 		ttl          time.Duration
-		reference    string
-		focusHint    string
+		images       []vision.ImageInput
+		prompt       string
 		indexes      []int
 		imageNumbers []int
 	}
-	jobsByKey := make(map[string]*analysisJob, len(images))
-	jobs := make([]*analysisJob, 0, len(images))
-	cachePlan := cacheTracePlan{Images: make([]cacheTraceRecord, 0, len(images))}
-	for i := range images {
-		key, ttl := analysisCacheKey(images[i].Reference, cfg.VisionModel, cfg.Language, images[i].FocusHint, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
+	jobsByKey := make(map[string]*analysisJob, len(groups))
+	jobs := make([]*analysisJob, 0, len(groups))
+	cachePlan := cacheTracePlan{Groups: make([]cacheTraceRecord, 0, len(groups))}
+	for i := range groups {
+		groupImages := visionInputs(groups[i].Images)
+		key, ttl := analysisGroupCacheKey(groupImages, cfg.VisionModel, cfg.Language, groups[i].Prompt, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
+		imageNumbers := make([]int, len(groupImages))
+		for j := range groupImages {
+			imageNumbers[j] = groupImages[j].Number
+		}
 		if cached, ok := state.cache.Get(key); ok {
 			results[i] = cached
 			cachePlan.CacheHits++
-			cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "cache_hit", CacheKey: key})
+			cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "cache_hit", CacheKey: key})
 			continue
 		}
 		if existing := jobsByKey[key]; existing != nil {
 			existing.indexes = append(existing.indexes, i)
-			existing.imageNumbers = append(existing.imageNumbers, images[i].Number)
 			cachePlan.RequestDeduplicates++
-			cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "request_deduplicated", JobID: existing.id, CacheKey: key})
+			cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "request_deduplicated", JobID: existing.id, CacheKey: key})
 			continue
 		}
-		job := &analysisJob{id: len(jobs) + 1, key: key, ttl: ttl, reference: images[i].Reference, focusHint: images[i].FocusHint, indexes: []int{i}, imageNumbers: []int{images[i].Number}}
+		job := &analysisJob{id: len(jobs) + 1, key: key, ttl: ttl, images: groupImages, prompt: groups[i].Prompt, indexes: []int{i}, imageNumbers: imageNumbers}
 		jobsByKey[key] = job
 		jobs = append(jobs, job)
-		cachePlan.Images = append(cachePlan.Images, cacheTraceRecord{ImageNumber: images[i].Number, Disposition: "vlm_job", JobID: job.id, CacheKey: key})
+		cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "vlm_job", JobID: job.id, CacheKey: key})
 	}
 	cachePlan.VLMJobs = len(jobs)
 	traceCache(traceSession, cachePlan)
 	if len(jobs) == 0 {
-		rewritten, rewriteErr := plan.RewriteText(results)
+		rewritten, rewriteErr := plan.RewriteGroupsText(results)
 		if rewriteErr != nil {
 			traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 			r.tracePlannerLimit(ctx, state, rewriteErr)
@@ -242,28 +329,41 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
-	for _, job := range jobs {
-		job := job
+	jobQueue := make(chan *analysisJob)
+	workerCount := cfg.MaxInflightVisionRequests
+	if workerCount > len(jobs) {
+		workerCount = len(jobs)
+	}
+	for worker := 0; worker < workerCount; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			jobCtx := tracelog.WithJob(ctx, tracelog.Job{ID: job.id, ImageNumbers: job.imageNumbers})
-			result, analyzeErr := safeAnalyze(jobCtx, analyzer, job.reference, job.focusHint, cfg.MaxResultChars)
-			if analyzeErr != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = analyzeErr
+			for job := range jobQueue {
+				jobCtx := tracelog.WithJob(ctx, tracelog.Job{ID: job.id, ImageNumbers: job.imageNumbers})
+				result, analyzeErr := safeAnalyzeGroup(jobCtx, state.visionLimiter, analyzer, job.images, job.prompt, cfg.MaxResultChars)
+				if analyzeErr != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = analyzeErr
+					}
+					errMu.Unlock()
+					cancel()
+					continue
 				}
-				errMu.Unlock()
-				cancel()
-				return
-			}
-			state.cache.Set(job.key, result, job.ttl)
-			for _, index := range job.indexes {
-				results[index] = result
+				state.cache.Set(job.key, result, job.ttl)
+				for _, index := range job.indexes {
+					results[index] = result
+				}
 			}
 		}()
 	}
+	for _, job := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		jobQueue <- job
+	}
+	close(jobQueue)
 	wg.Wait()
 	errMu.Lock()
 	hasErr := firstErr != nil
@@ -271,7 +371,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	if hasErr {
 		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
 	}
-	rewritten, rewriteErr := plan.RewriteText(results)
+	rewritten, rewriteErr := plan.RewriteGroupsText(results)
 	if rewriteErr != nil {
 		traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 		r.tracePlannerLimit(ctx, state, rewriteErr)
@@ -281,14 +381,22 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
 }
 
-func safeAnalyze(ctx context.Context, analyzer vision.Analyzer, reference, focusHint string, maxResultChars int) (result string, err error) {
+func visionInputs(images []responses.Image) []vision.ImageInput {
+	inputs := make([]vision.ImageInput, 0, len(images))
+	for i := range images {
+		inputs = append(inputs, vision.ImageInput{Number: images[i].Number, Reference: images[i].Reference})
+	}
+	return inputs
+}
+
+func safeAnalyzeGroup(ctx context.Context, limiter *visionLimiter, analyzer vision.Analyzer, images []vision.ImageInput, prompt string, maxResultChars int) (result string, err error) {
 	defer func() {
 		if recover() != nil {
 			result = ""
 			err = errors.New("visual analyzer failed")
 		}
 	}()
-	result, err = analyzer.Analyze(ctx, reference, focusHint)
+	result, err = analyzeGroupAdaptive(ctx, limiter, analyzer, images, prompt)
 	if err != nil {
 		return "", err
 	}
@@ -296,6 +404,80 @@ func safeAnalyze(ctx context.Context, analyzer vision.Analyzer, reference, focus
 		return "", err
 	}
 	return result, nil
+}
+
+func analyzeGroupAdaptive(ctx context.Context, limiter *visionLimiter, analyzer vision.Analyzer, images []vision.ImageInput, prompt string) (string, error) {
+	if len(images) == 0 {
+		return "", errors.New("visual prompt group has no images")
+	}
+	if batch, ok := analyzer.(vision.BatchAnalyzer); ok {
+		result, err := callWithVisionSlot(ctx, limiter, func() (string, error) {
+			return batch.AnalyzeBatch(ctx, images, prompt)
+		})
+		if err == nil || !vision.IsPayloadTooLarge(err) || len(images) == 1 {
+			return result, err
+		}
+		middle := len(images) / 2
+		if session := tracelog.FromContext(ctx); session != nil {
+			session.Event("vlm_batch_split", map[string]any{
+				"reason": "upstream_413", "image_numbers": visionInputNumbers(images),
+				"left_count": middle, "right_count": len(images) - middle,
+			})
+		}
+		left, leftErr := analyzeGroupAdaptive(ctx, limiter, analyzer, images[:middle], prompt)
+		if leftErr != nil {
+			return "", leftErr
+		}
+		right, rightErr := analyzeGroupAdaptive(ctx, limiter, analyzer, images[middle:], prompt)
+		if rightErr != nil {
+			return "", rightErr
+		}
+		return left + "\n\n" + right, nil
+	}
+	parts := make([]string, 0, len(images))
+	for i := range images {
+		image := images[i]
+		part, err := callWithVisionSlot(ctx, limiter, func() (string, error) {
+			return analyzer.Analyze(ctx, image.Reference, prompt)
+		})
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("Image %d:\n%s", image.Number, strings.TrimSpace(part)))
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
+func visionInputNumbers(images []vision.ImageInput) []int {
+	numbers := make([]int, len(images))
+	for i := range images {
+		numbers[i] = images[i].Number
+	}
+	return numbers
+}
+
+func callWithVisionSlot(ctx context.Context, limiter *visionLimiter, call func() (string, error)) (string, error) {
+	queuedAt := time.Now()
+	if err := limiter.Acquire(ctx); err != nil {
+		if session := tracelog.FromContext(ctx); session != nil {
+			session.Event("vision_slot_cancelled", map[string]any{"queue_ms": time.Since(queuedAt).Milliseconds(), "error": err.Error()})
+		}
+		return "", err
+	}
+	inflight, limit := limiter.Snapshot()
+	if session := tracelog.FromContext(ctx); session != nil {
+		session.Event("vision_slot_acquired", map[string]any{
+			"queue_ms": time.Since(queuedAt).Milliseconds(), "inflight": inflight, "limit": limit,
+		})
+	}
+	defer func() {
+		limiter.Release()
+		if session := tracelog.FromContext(ctx); session != nil {
+			remaining, currentLimit := limiter.Snapshot()
+			session.Event("vision_slot_released", map[string]any{"inflight": remaining, "limit": currentLimit})
+		}
+	}()
+	return call()
 }
 
 func (r *Runtime) targetModelSnapshot() []string {
@@ -316,18 +498,19 @@ func (r *Runtime) tracePlannerLimit(ctx context.Context, state *runtimeState, er
 		return
 	}
 	fields := map[string]any{
-		"limit_kind":                string(planner.Limit),
-		"actual":                    planner.Actual,
-		"maximum":                   planner.Maximum,
-		"config_generation":         state.generation,
-		"max_request_bytes":         state.cfg.MaxRequestBytes,
-		"max_image_reference_bytes": state.cfg.MaxImageReferenceBytes,
-		"max_images_per_request":    state.cfg.MaxImagesPerRequest,
+		"limit_kind":                       string(planner.Limit),
+		"actual":                           planner.Actual,
+		"maximum":                          planner.Maximum,
+		"config_generation":                state.generation,
+		"max_request_bytes":                state.cfg.MaxRequestBytes,
+		"max_image_reference_bytes":        state.cfg.MaxImageReferenceBytes,
+		"emergency_max_images_per_request": state.cfg.EmergencyMaxImagesPerRequest,
+		"max_inflight_vision_requests":     state.cfg.MaxInflightVisionRequests,
 	}
 	message := fmt.Sprintf(
-		"deepseek-vision request rejected limit_kind=%s actual=%d maximum=%d config_generation=%d max_request_bytes=%d max_image_reference_bytes=%d max_images_per_request=%d",
+		"deepseek-vision request rejected limit_kind=%s actual=%d maximum=%d config_generation=%d max_request_bytes=%d max_image_reference_bytes=%d emergency_max_images_per_request=%d",
 		planner.Limit, planner.Actual, planner.Maximum, state.generation,
-		state.cfg.MaxRequestBytes, state.cfg.MaxImageReferenceBytes, state.cfg.MaxImagesPerRequest,
+		state.cfg.MaxRequestBytes, state.cfg.MaxImageReferenceBytes, state.cfg.EmergencyMaxImagesPerRequest,
 	)
 	safeDiagnostic(r.diagnostic, vision.HostCallbackID(ctx), "warn", message, fields)
 }
@@ -423,7 +606,7 @@ func publicLimitMessage(limit responses.LimitKind, actual, maximum int) string {
 		return "image reference exceeds configured limit"
 	case responses.LimitImageCount:
 		if actual > 0 && maximum > 0 {
-			return fmt.Sprintf("request contains too many images: found %d image blocks, limit %d", actual, maximum)
+			return fmt.Sprintf("request contains too many unique images: found %d, emergency limit %d", actual, maximum)
 		}
 		return "request contains too many images"
 	case responses.LimitVLMResult:

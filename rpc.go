@@ -196,7 +196,10 @@ func pluginRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
 				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},
-				{Name: "analysis_cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "视觉分析缓存条目数，0 关闭缓存。默认值 / Analysis cache entries; 0 disables. Default: 128."},
+				{Name: "max_inflight_vision_requests", Type: pluginapi.ConfigFieldTypeInteger, Description: "插件全局同时在途的宿主视觉请求数；多余任务排队。范围 1–16，默认 4。/ Global in-flight host vision requests; excess work queues. Range 1–16, default 4."},
+				{Name: "emergency_max_images_per_request", Type: pluginapi.ConfigFieldTypeInteger, Description: "单个客户端请求的唯一图片应急上限，仅防御异常负载。范围 16–1024，默认 256。/ Emergency unique-image ceiling per client request. Range 16–1024, default 256."},
+				{Name: "request_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "整次视觉预处理（含排队）的总超时秒数。范围 1–3600，默认 120。/ Total vision preprocessing deadline including queueing. Range 1–3600, default 120."},
+				{Name: "analysis_cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "prompt 组视觉分析缓存条目数，0 关闭缓存。默认值 / Prompt-group analysis cache entries; 0 disables. Default: 128."},
 				{Name: "analysis_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "data URI 分析缓存秒数。默认值 / Data-URI analysis cache TTL in seconds. Default: 900."},
 				{Name: "analysis_url_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "URL 图片分析缓存秒数。默认值 / URL-image analysis cache TTL in seconds. Default: 120."},
 				{Name: "trace_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "完整明文调试 trace；包含请求、图片引用和模型结果，仅临时开启。默认值 / Full plaintext debug trace; includes requests, image references, and model results. Enable temporarily. Default: false."},
