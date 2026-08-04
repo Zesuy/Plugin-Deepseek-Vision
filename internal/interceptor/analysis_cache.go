@@ -89,13 +89,17 @@ func (c *analysisCache) Len() int {
 	return len(c.items)
 }
 
-func analysisCacheKey(reference, model, language, focusHint string, dataTTL, urlTTL time.Duration) (string, time.Duration) {
-	ttl := urlTTL
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(reference)), "data:") {
-		ttl = dataTTL
+func analysisGroupCacheKey(images []vision.ImageInput, model, language, prompt string, dataTTL, urlTTL time.Duration) (string, time.Duration) {
+	ttl := dataTTL
+	parts := []string{"prompt-group-v1", strings.TrimSpace(model), vision.NormalizeLanguage(language), vision.BuildPrompt(prompt, language)}
+	for i := range images {
+		parts = append(parts, images[i].Reference)
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(images[i].Reference)), "data:") {
+			ttl = urlTTL
+		}
 	}
 	hash := sha256.New()
-	for _, part := range []string{reference, strings.TrimSpace(model), vision.NormalizeLanguage(language), vision.BuildPrompt(focusHint, language)} {
+	for _, part := range parts {
 		var length [8]byte
 		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
 		_, _ = hash.Write(length[:])

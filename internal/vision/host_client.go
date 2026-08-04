@@ -18,7 +18,19 @@ var (
 	ErrInvalidResponse         = errors.New("invalid visual model response")
 	ErrEmptyResponse           = errors.New("visual model returned empty response")
 	ErrResponseTooLarge        = errors.New("visual model response exceeds size limit")
+	ErrEmptyImageBatch         = errors.New("visual model image batch is empty")
 )
+
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("host model execution returned status %d", e.StatusCode)
+}
+
+func IsPayloadTooLarge(err error) bool {
+	var status *HTTPStatusError
+	return errors.As(err, &status) && status.StatusCode == http.StatusRequestEntityTooLarge
+}
 
 type HostExecuteFunc func(context.Context, pluginapi.HostModelExecutionRequest, string) (pluginapi.HostModelExecutionResponse, error)
 
@@ -68,6 +80,10 @@ func NewHostClient(opts HostOptions) (*HostClient, error) {
 }
 
 func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint string) (string, error) {
+	return c.AnalyzeBatch(ctx, []ImageInput{{Number: 1, Reference: imageReference}}, focusHint)
+}
+
+func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, promptContext string) (string, error) {
 	if c == nil || c.opts.Execute == nil {
 		return "", ErrHostExecutorUnavailable
 	}
@@ -77,22 +93,34 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 	if err := context.Cause(ctx); err != nil {
 		return "", err
 	}
+	if len(images) == 0 {
+		return "", ErrEmptyImageBatch
+	}
 	session := tracelog.FromContext(ctx)
 	job := tracelog.JobFromContext(ctx)
-	prefix := fmt.Sprintf("40-vlm-job-%03d", job.ID)
+	prefix := fmt.Sprintf("40-vlm-job-%03d-images-%s", job.ID, imageNumberToken(images))
+	referenceBytes := 0
+	imageNumbers := make([]int, len(images))
+	for i := range images {
+		referenceBytes += len(images[i].Reference)
+		imageNumbers[i] = images[i].Number
+	}
 	if session != nil {
 		session.JSON(prefix+"-metadata.json", map[string]any{
-			"job_id": job.ID, "image_numbers": job.ImageNumbers,
-			"image_reference": imageReference, "reference_bytes": len(imageReference),
-			"focus_hint": focusHint, "vision_model": c.opts.Model, "language": c.opts.Language,
+			"job_id": job.ID, "image_numbers": imageNumbers,
+			"images": images, "reference_bytes": referenceBytes,
+			"prompt_context": promptContext, "vision_model": c.opts.Model, "language": c.opts.Language,
 		})
 	}
+	content := []requestContent{{Type: "input_text", Text: BuildPrompt(promptContext, c.opts.Language)}}
+	for i := range images {
+		content = append(content,
+			requestContent{Type: "input_text", Text: fmt.Sprintf("Image %d:", i+1)},
+			requestContent{Type: "input_image", ImageURL: images[i].Reference},
+		)
+	}
 	payload := requestPayload{
-		Model: c.opts.Model,
-		Input: []requestInput{{Role: "user", Content: []requestContent{
-			{Type: "input_text", Text: BuildPrompt(focusHint, c.opts.Language)},
-			{Type: "input_image", ImageURL: imageReference},
-		}}},
+		Model: c.opts.Model, Input: []requestInput{{Role: "user", Content: content}},
 		MaxOutputTokens: 4096,
 		Stream:          false,
 	}
@@ -104,8 +132,8 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 	if session != nil {
 		session.Artifact(prefix+"-request.json", body)
 		session.Event("vlm_call_started", map[string]any{
-			"job_id": job.ID, "image_numbers": job.ImageNumbers,
-			"request_bytes": len(body), "reference_bytes": len(imageReference),
+			"job_id": job.ID, "image_numbers": imageNumbers,
+			"request_bytes": len(body), "reference_bytes": referenceBytes, "image_count": len(images),
 		})
 	}
 	hostRequest := pluginapi.HostModelExecutionRequest{
@@ -147,7 +175,7 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 				"outcome": "http_error", "status_code": response.StatusCode,
 			})
 		}
-		return "", errors.New("host model execution failed")
+		return "", &HTTPStatusError{StatusCode: response.StatusCode}
 	}
 	if int64(len(response.Body)) > c.opts.MaxResponseBytes {
 		if session != nil {
@@ -176,6 +204,20 @@ func (c *HostClient) Analyze(ctx context.Context, imageReference, focusHint stri
 		})
 	}
 	return text, nil
+}
+
+func imageNumberToken(images []ImageInput) string {
+	if len(images) == 0 {
+		return "none"
+	}
+	if len(images) > 6 {
+		return fmt.Sprintf("%d-%d-count-%d", images[0].Number, images[len(images)-1].Number, len(images))
+	}
+	parts := make([]string, len(images))
+	for i := range images {
+		parts[i] = fmt.Sprintf("%d", images[i].Number)
+	}
+	return strings.Join(parts, "-")
 }
 
 type requestPayload struct {

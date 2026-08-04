@@ -48,8 +48,44 @@ func TestHostClientUsesResponsesProtocolWithoutCredentials(t *testing.T) {
 	if err := json.Unmarshal(got.Body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Model != "vision-model" || len(payload.Input) != 1 || len(payload.Input[0].Content) != 2 {
+	if payload.Model != "vision-model" || len(payload.Input) != 1 || len(payload.Input[0].Content) != 3 {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestHostClientSendsOneOrderedMultiImageRequest(t *testing.T) {
+	var got pluginapi.HostModelExecutionRequest
+	client, err := NewHostClient(HostOptions{Model: "vision-model", Execute: func(_ context.Context, request pluginapi.HostModelExecutionRequest, _ string) (pluginapi.HostModelExecutionResponse, error) {
+		got = request
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"output_text":"joint"}`)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.AnalyzeBatch(context.Background(), []ImageInput{{Number: 2, Reference: "https://example.com/a.png"}, {Number: 4, Reference: "https://example.com/b.png"}}, "compare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload requestPayload
+	if err := json.Unmarshal(got.Body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	content := payload.Input[0].Content
+	if len(content) != 5 || content[1].Text != "Image 1:" || content[2].ImageURL != "https://example.com/a.png" || content[3].Text != "Image 2:" || content[4].ImageURL != "https://example.com/b.png" {
+		t.Fatalf("ordered multi-image content = %#v", content)
+	}
+}
+
+func TestHostClientExposes413ForAdaptiveSplitting(t *testing.T) {
+	client, err := NewHostClient(HostOptions{Execute: func(context.Context, pluginapi.HostModelExecutionRequest, string) (pluginapi.HostModelExecutionResponse, error) {
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusRequestEntityTooLarge, Body: []byte(`{"error":"too large"}`)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.AnalyzeBatch(context.Background(), []ImageInput{{Number: 1, Reference: "https://example.com/a.png"}}, "")
+	if !IsPayloadTooLarge(err) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -126,10 +162,10 @@ func TestHostClientWritesFullPlaintextTrace(t *testing.T) {
 	}
 	bundle := filepath.Join(root, "requests", entries[0].Name())
 	checks := map[string][]string{
-		"40-vlm-job-001-metadata.json":     {"data:image/png;base64,PLAINTEXT", "full focus hint"},
-		"40-vlm-job-001-request.json":      {"data:image/png;base64,PLAINTEXT"},
-		"40-vlm-job-001-response.json":     {"plaintext response"},
-		"40-vlm-job-001-parsed-result.txt": {"plaintext response"},
+		"40-vlm-job-001-images-1-metadata.json":     {"data:image/png;base64,PLAINTEXT", "full focus hint"},
+		"40-vlm-job-001-images-1-request.json":      {"data:image/png;base64,PLAINTEXT"},
+		"40-vlm-job-001-images-1-response.json":     {"plaintext response"},
+		"40-vlm-job-001-images-1-parsed-result.txt": {"plaintext response"},
 	}
 	for name, fragments := range checks {
 		raw, readErr := os.ReadFile(filepath.Join(bundle, name))
@@ -142,7 +178,7 @@ func TestHostClientWritesFullPlaintextTrace(t *testing.T) {
 			}
 		}
 	}
-	responseMetadata, err := os.ReadFile(filepath.Join(bundle, "40-vlm-job-001-response-metadata.json"))
+	responseMetadata, err := os.ReadFile(filepath.Join(bundle, "40-vlm-job-001-images-1-response-metadata.json"))
 	if err != nil || strings.Contains(string(responseMetadata), "provider-secret") || strings.Contains(string(responseMetadata), "header-api-key") || !strings.Contains(string(responseMetadata), "[REDACTED]") {
 		t.Fatalf("response metadata redaction failed: err=%v body=%s", err, responseMetadata)
 	}

@@ -41,7 +41,8 @@ target_models: [deepseek-v4-flash, deepseek-v4-pro]
 vision_model: gpt-5.6-luna
 language: %s
 request_timeout_seconds: 2
-max_images_per_request: 2
+emergency_max_images_per_request: 256
+max_inflight_vision_requests: 2
 max_request_bytes: 1048576
 max_image_reference_bytes: 1048576
 max_response_bytes: 1048576
@@ -122,7 +123,8 @@ target_models: [deepseek-v4-flash]
 vision_model: host-vision-model
 language: auto
 request_timeout_seconds: 2
-max_images_per_request: 2
+emergency_max_images_per_request: 256
+max_inflight_vision_requests: 2
 max_request_bytes: 1048576
 max_image_reference_bytes: 1048576
 max_response_bytes: 1048576
@@ -176,7 +178,7 @@ func TestInvalidInitialConfigurationStillPublishesFields(t *testing.T) {
 	if err := json.Unmarshal(env.Result, &registered); err != nil {
 		t.Fatal(err)
 	}
-	if len(registered.Metadata.ConfigFields) != 6 {
+	if len(registered.Metadata.ConfigFields) != 9 {
 		t.Fatalf("config fields=%#v", registered.Metadata.ConfigFields)
 	}
 }

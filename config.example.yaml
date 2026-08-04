@@ -13,7 +13,12 @@ plugins:
 
       language: zh
       request_timeout_seconds: 120
-      max_images_per_request: 4
+      # Global backpressure for host vision callbacks. Prompt groups queue
+      # instead of being rejected when all slots are busy.
+      max_inflight_vision_requests: 4
+      # Last-resort unique-image ceiling; ordinary multi-image prompts are sent
+      # to Luna together and do not use this as a batch size.
+      emergency_max_images_per_request: 256
       max_request_bytes: 20971520
       max_image_reference_bytes: 15728640
       max_response_bytes: 4194304

@@ -18,13 +18,15 @@
   retained historical turns and the current turn are converted together. A
   `previous_response_id` does not expose server-side history to the callback;
   images hidden behind that identifier cannot be inspected or rewritten.
-- There is one host model call per unique image/model/language/full-prompt key.
-  Duplicate work in one request is merged and successful results may be reused
-  from a small TTL cache. CLIProxyAPI owns provider concurrency. The plugin
-  does not provide OCR and VLM as separate models; the configured VLM returns both
-  visible-text transcription and visual explanation.
+- There is normally one host model call per image-bearing prompt item, with all
+  of that item's images supplied together in order. Duplicate prompt groups are
+  merged and successful group analyses may be reused from a small TTL cache.
+  The plugin globally bounds in-flight host callbacks while CLIProxyAPI owns
+  provider concurrency, retry, routing, and rate-limit policy. An explicit 413
+  from the host causes ordered batch splitting; other failures are not retried
+  or classified using provider-specific response text.
 - For an eligible Responses image request, malformed JSON is a 400, unsupported
-  image sources are a 422, configured body/reference/image-count limits are a
+  image sources are a 422, configured body/reference/emergency unique-image limits are a
   413 with a category-specific public message and a content-free `host.log`
   diagnostic, and VLM/timeout/invalid-result/rewrite failures are a 502. Failures are
   fail-closed and never forward the original image; non-eligible requests pass

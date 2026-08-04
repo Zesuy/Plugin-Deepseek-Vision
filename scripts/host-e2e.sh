@@ -110,7 +110,8 @@ plugins:
       vision_model: "gpt-5.6-luna"
       language: "en"
       request_timeout_seconds: 10
-      max_images_per_request: 4
+      max_inflight_vision_requests: 4
+      emergency_max_images_per_request: 256
       max_request_bytes: 20971520
       max_image_reference_bytes: 1048576
       max_response_bytes: 1048576
@@ -192,12 +193,16 @@ assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
 fields = {field["name"]: field["type"] for field in item["config_fields"]}
-assert len(fields) == 5, fields
+assert len(fields) == 9, fields
 assert fields["vision_model"] == "string", fields
 assert fields["language"] == "enum", fields
+assert fields["max_inflight_vision_requests"] == "integer", fields
+assert fields["emergency_max_images_per_request"] == "integer", fields
+assert fields["request_timeout_seconds"] == "integer", fields
 assert fields["analysis_cache_size"] == "integer", fields
 assert fields["analysis_cache_ttl_seconds"] == "integer", fields
 assert fields["analysis_url_cache_ttl_seconds"] == "integer", fields
+assert fields["trace_enabled"] == "boolean", fields
 PY
 mgmt "$BASE/v0/management/plugins/deepseek-vision/config" >"$TMP/plugin-config.json"
 python3 - "$TMP/plugin-config.json" <<'PY'
@@ -208,6 +213,8 @@ assert payload.get("store", {}).get("version") == "0.1.0", payload
 assert payload.get("analysis_cache_size") == 16, payload
 assert payload.get("analysis_cache_ttl_seconds") == 60, payload
 assert payload.get("analysis_url_cache_ttl_seconds") == 30, payload
+assert payload.get("max_inflight_vision_requests") == 4, payload
+assert payload.get("emergency_max_images_per_request") == 256, payload
 PY
 echo "plugin registered/effective and store metadata accepted"
 
@@ -300,21 +307,21 @@ print(json.dumps({"model":"deepseek-v4-flash","input":[
 ],"stream":False}, separators=(",", ":")))
 PY
 )
-assert_success multi /v1/responses "$multi_body" "$((VLM_BEFORE + 6))" "$((UPSTREAM_BEFORE + 5))"
+assert_success multi /v1/responses "$multi_body" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 5))"
 assert_last_upstream_rewritten
 
 no_image='{"model":"deepseek-v4-flash","input":[{"role":"user","content":[{"type":"input_text","text":"plain"}]}],"stream":false}'
-assert_success no-image /v1/responses "$no_image" "$((VLM_BEFORE + 6))" "$((UPSTREAM_BEFORE + 6))"
+assert_success no-image /v1/responses "$no_image" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 6))"
 
 non_target=$(make_request other-model false non-target)
-assert_success non-target /v1/responses "$non_target" "$((VLM_BEFORE + 6))" "$((UPSTREAM_BEFORE + 7))"
+assert_success non-target /v1/responses "$non_target" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 7))"
 
 compact=$(make_request deepseek-v4-flash false compact)
 code=$(post /v1/responses/compact "$compact" "$TMP/compact.out")
 [[ "$code" == "200" ]] || { echo "compact failed HTTP $code" >&2; exit 1; }
 vlm_count=$(state_json "http://127.0.0.1:$VLM_PORT" | count_role)
 upstream_count=$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)
-[[ "$vlm_count" == "$((VLM_BEFORE + 6))" ]] || { echo "compact was not bypassed" >&2; exit 1; }
+[[ "$vlm_count" == "$((VLM_BEFORE + 5))" ]] || { echo "compact was not bypassed" >&2; exit 1; }
 [[ "$upstream_count" == "$((UPSTREAM_BEFORE + 8))" ]] || { echo "compact upstream count=$upstream_count" >&2; exit 1; }
 
 printf 'fail\n' >"$VLM_MODE"
@@ -337,7 +344,7 @@ until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; pr
   sleep 0.2
 done
 disabled=$(make_request deepseek-v4-flash false disabled)
-assert_success disabled /v1/responses "$disabled" "$((VLM_BEFORE + 7))" "$((UPSTREAM_BEFORE + 9))"
+assert_success disabled /v1/responses "$disabled" "$((VLM_BEFORE + 6))" "$((UPSTREAM_BEFORE + 9))"
 mgmt -X PATCH -H 'Content-Type: application/json' -d '{"enabled":true}' "$BASE/v0/management/plugins/deepseek-vision/enabled" >/dev/null
 deadline=$((SECONDS + 20))
 until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; print(next(x for x in json.load(sys.stdin)["plugins"] if x["id"]=="deepseek-vision")["effective_enabled"])')" == "True" ]]; do
@@ -345,7 +352,7 @@ until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; pr
   sleep 0.2
 done
 reloaded=$(make_request deepseek-v4-flash false reloaded)
-assert_success reloaded /v1/responses "$reloaded" "$((VLM_BEFORE + 8))" "$((UPSTREAM_BEFORE + 10))"
+assert_success reloaded /v1/responses "$reloaded" "$((VLM_BEFORE + 7))" "$((UPSTREAM_BEFORE + 10))"
 
 if grep -E 'fixture-vlm-key|upstream-key|data:image/' "$TMP/host.log" >/dev/null 2>&1; then
   echo "sensitive credential or image reference leaked to host log" >&2

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultMaxImages         = 4
+	defaultMaxImages         = 256
 	defaultMaxReferenceBytes = 15 * 1024 * 1024
 	defaultMaxBodyBytes      = 20 * 1024 * 1024
 	defaultMaxFocusChars     = 2000
@@ -69,6 +69,19 @@ type Image struct {
 	location imageLocation
 }
 
+// PromptGroup is the unit sent to the visual model. Images that belong to the
+// same Responses content/output item stay together so the model can preserve
+// comparisons and relationships expressed by one prompt.
+type PromptGroup struct {
+	ID         int     `json:"id"`
+	InputIndex int     `json:"input_index"`
+	Source     string  `json:"source"`
+	Prompt     string  `json:"prompt"`
+	Images     []Image `json:"images"`
+
+	locationKind locationKind
+}
+
 type imageLocation struct {
 	kind      locationKind
 	input     int
@@ -108,6 +121,7 @@ type Plan struct {
 	original   []byte
 	root       any
 	images     []Image
+	groups     []PromptGroup
 	options    Options
 	inputItems int
 }
@@ -225,15 +239,48 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 	for i := range pending {
 		pending[i].FocusHint = chooseFocus(pending[i].location, candidates, opt.MaxFocusChars)
 	}
-	if len(pending) > opt.MaxImages {
+	uniqueReferences := make(map[string]struct{}, len(pending))
+	for i := range pending {
+		uniqueReferences[pending[i].Reference] = struct{}{}
+	}
+	if len(uniqueReferences) > opt.MaxImages {
 		debugImages := pendingImageValues(pending)
-		return nil, imageCountExceeded(len(pending), opt.MaxImages, summarizeImages(debugImages, len(items)), debugImages)
+		return nil, imageCountExceeded(len(uniqueReferences), opt.MaxImages, summarizeImages(debugImages, len(items)), debugImages)
 	}
 
 	for i := range pending {
 		plan.images = append(plan.images, pending[i].Image)
 	}
+	groupIndexes := make(map[locationKey]int)
+	for i := range plan.images {
+		image := plan.images[i]
+		key := locationKey{kind: image.location.kind, input: image.InputIndex, block: -1}
+		groupIndex, exists := groupIndexes[key]
+		if !exists {
+			groupIndex = len(plan.groups)
+			groupIndexes[key] = groupIndex
+			plan.groups = append(plan.groups, PromptGroup{
+				ID: len(plan.groups) + 1, InputIndex: image.InputIndex,
+				Source: image.Source, Prompt: groupPrompt(image, candidates, opt.MaxFocusChars),
+				locationKind: image.location.kind,
+			})
+		}
+		plan.groups[groupIndex].Images = append(plan.groups[groupIndex].Images, image)
+	}
 	return plan, nil
+}
+
+func groupPrompt(image Image, candidates []focusCandidate, maxChars int) string {
+	var parts []string
+	for i := range candidates {
+		if candidates[i].input == image.InputIndex {
+			parts = append(parts, strings.TrimSpace(candidates[i].text))
+		}
+	}
+	if text := strings.TrimSpace(strings.Join(parts, "\n\n")); text != "" {
+		return truncateRunes(text, maxChars)
+	}
+	return chooseFocus(image.location, candidates, maxChars)
 }
 
 type pendingImage struct {
@@ -413,6 +460,23 @@ func (p *Plan) Images() []Image {
 		images[i].location = imageLocation{}
 	}
 	return images
+}
+
+// Groups returns a deep copy of the prompt-level visual work units.
+func (p *Plan) Groups() []PromptGroup {
+	if p == nil || len(p.groups) == 0 {
+		return nil
+	}
+	groups := make([]PromptGroup, len(p.groups))
+	for i := range p.groups {
+		groups[i] = p.groups[i]
+		groups[i].locationKind = 0
+		groups[i].Images = append([]Image(nil), p.groups[i].Images...)
+		for j := range groups[i].Images {
+			groups[i].Images[j].location = imageLocation{}
+		}
+	}
+	return groups
 }
 
 // HasImages reports whether discovery found at least one image.

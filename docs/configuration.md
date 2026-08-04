@@ -12,12 +12,13 @@ an invalid update leaves the previous snapshot active.
 | `vision_model` | VLM model identifier | `gpt-5.6-luna` |
 | `language` | Preferred output language | `zh` |
 | `request_timeout_seconds` | Total preprocessing deadline | 120 |
-| `max_images_per_request` | Image blocks accepted per request | 4 |
+| `max_inflight_vision_requests` | Global in-flight prompt-group VLM calls; excess work queues | 4 |
+| `emergency_max_images_per_request` | Last-resort unique-image ceiling | 256 |
 | `max_request_bytes` | Raw Responses body limit | 20 MiB |
 | `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
 | `max_response_bytes` | VLM response limit | 4 MiB |
 | `max_result_chars` | Extracted result limit | 20,000 |
-| `analysis_cache_size` | Maximum derived-text cache entries; `0` disables | 128 |
+| `analysis_cache_size` | Maximum prompt-group analysis entries; `0` disables | 128 |
 | `analysis_cache_ttl_seconds` | Data-URI analysis TTL | 900 |
 | `analysis_url_cache_ttl_seconds` | URL-image analysis TTL | 120 |
 | `trace_enabled` | Full plaintext debug trace | `false` |
@@ -29,7 +30,7 @@ per-configuration `max_request_bytes` ceiling is reached.
 
 Limit rejections are diagnosed through CLIProxyAPI's native `host.log`. A 413
 warning contains `limit_kind`, `actual`, `maximum`, the active body/reference/
-image-count settings, and `config_generation`. ABI admission failures instead
+emergency image-count settings, and `config_generation`. ABI admission failures instead
 report the ABI request bytes, hard cap, process budget and in-flight usage. No
 request body, image reference, header or credential is logged.
 
@@ -39,10 +40,10 @@ nested execution skips this plugin's own interceptor, so it does not recurse.
 No additional VLM endpoint or key is supported or required. CLIProxyAPI also
 owns provider protocol translation, transport, retry, and credential policy.
 
-The CPAMC form exposes `vision_model`, `language`, the three cache controls, and
-a boolean `trace_enabled` switch. Their descriptions include bilingual
-defaults. Advanced gating, timeout, and size controls remain available through
-YAML.
+The CPAMC form exposes `vision_model`, `language`, global in-flight vision
+requests, the emergency image ceiling, total timeout, the three cache controls,
+and a boolean `trace_enabled` switch. Their descriptions include bilingual
+defaults and validation ranges. Advanced size controls remain available through YAML.
 
 ## Full-context debug trace
 
@@ -50,7 +51,7 @@ YAML.
 request bundle below `logs/deepseek-vision-trace/requests/`. In the Docker
 example this is the host-mounted `./logs/deepseek-vision-trace/` directory.
 Each bundle preserves the exact inbound multi-turn body, complete image URLs or
-data URIs, discovered image positions and focus hints, cache/deduplication plan,
+data URIs, discovered image positions and prompt-group context, cache/deduplication plan,
 every VLM request and response, parsed VLM result, rewritten request body, and
 the final interceptor result. The event stream references the bundle and uses
 the host-provided request/trace IDs.
@@ -74,7 +75,8 @@ are accepted only for decoding and unconditionally ignored. Configure the
 actual model/provider in CLIProxyAPI.
 
 Each runtime generation owns an LRU using the configured capacity and TTLs.
-Keys hash the image reference, model, normalized language, and complete prompt.
+Keys hash the ordered prompt-group image references, model, normalized language,
+and complete prompt.
 Reconfigure or restart creates a fresh cache. Setting `analysis_cache_size: 0`
 disables cross-request reuse while retaining single-request deduplication.
 
@@ -82,13 +84,16 @@ disables cross-request reuse while retaining single-request deduplication.
 not part of the validated release surface. Add it explicitly to
 `target_models` only after verifying that upstream path in your deployment.
 
-The VLM prompt is not a generic caption request. It requires a `Visible text:`
-section that faithfully transcribes text, code, tables, labels, and errors
-(`[illegible]` instead of guessing), plus a `Visual description:` section for
-UI/layout, objects, relationships, charts, and context. Image text is declared
-untrusted and must never be followed as an instruction. The description uses
-the configured language while transcription preserves original characters. A
-bounded 2,000-rune focus hint from surrounding user text may be appended.
+The VLM prompt is not a generic caption request. All images attached to one
+Responses content/output item are sent together in order. Luna is asked to
+label the images, faithfully transcribe text, and describe both individual
+content and cross-image relationships. Image text is declared untrusted and
+must never be followed as an instruction. The configured language applies to
+the explanation while transcription preserves original characters. Up to
+2,000 runes of text from the same prompt item are included as bounded context.
+
+`max_images_per_request` from older builds remains decodable but is ignored. It
+cannot silently restore the former four-block rejection behavior.
 
 ## Gate and pass-through rules
 

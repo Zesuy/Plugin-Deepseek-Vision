@@ -39,9 +39,9 @@
 | 能力 | 它带来的价值 |
 | --- | --- |
 | 🧩 **宿主原生集成** | 以 CLIProxyAPI v7 动态插件运行，沿用现有鉴权、模型别名、路由与上游配置 |
-| 🎯 **面向当前任务的读图** | 将图片附近的用户文本作为有界 focus hint，让 VLM 优先分析当前问题真正需要的细节 |
-| ⚡ **多图并发** | 不同图片并发提交给宿主，供应商并发策略由 CLIProxyAPI 管理；全部成功后才按原顺序写回 |
-| ♻️ **缓存与请求合并** | 单请求内相同图片与提示只分析一次；跨请求命中小型 TTL LRU 时直接复用结果 |
+| 🎯 **面向整条 prompt 的读图** | 同一条 prompt 的完整有界文本与所有图片一起交给 VLM，可直接比较和关联多张图 |
+| ⚡ **多图批处理与背压** | 每个 prompt 组通常只调用宿主一次；全局在途请求有界，供应商限流与重试由 CLIProxyAPI 管理 |
+| ♻️ **组级缓存与请求合并** | 相同有序图片组与完整 prompt 只分析一次；跨请求命中小型 TTL LRU 时直接复用结果 |
 | 🛡️ **Fail-closed 改写** | 任一图片处理失败即终止整次目标请求，不会把未处理原图继续发送给 DeepSeek |
 | 🔒 **默认零额外密钥** | 通过宿主回调复用 CLIProxyAPI 已配置的视觉模型与凭证；不缓存原图，并限制请求体与总超时 |
 
@@ -78,27 +78,26 @@ flowchart LR
     A["OpenAI Responses 请求"] --> B["CLIProxyAPI 鉴权、别名与模型解析"]
     B --> C{"命中协议、路径与目标模型？"}
     C -- "否" --> D["宿主正常路由"]
-    C -- "是" --> E["发现图片并提取 focus hint"]
+    C -- "是" --> E["按 prompt 对图片分组并提取上下文"]
     E --> V{"结构、引用与限制合法？"}
     V -- "否" --> H["400 / 413 / 422 安全终止"]
-    V -- "是" --> F["VLM 并发分析图片"]
-    F --> G{"所有图片均成功？"}
+    V -- "是" --> F["每个 prompt 组一次多图 VLM 分析"]
+    F --> G{"所有组均成功？"}
     G -- "否" --> X["502 安全终止"]
-    G -- "是" --> I["将 input_image 替换为 input_text"]
+    G -- "是" --> I["写入图片标记与一份联合分析"]
     I --> J["二次校验：请求中已无原图"]
     J --> K["DeepSeek 上游继续推理"]
 ```
 
-每张图片最终会被替换为一个结构稳定的文本块：
+同一条 prompt 中的图片会一起交给 Luna。原始位置替换为编号标记，并在该 prompt
+末尾只写入一份联合分析：
 
 ```text
-[Image 1 — Visual analysis]
+[Image 1 — included in the joint visual analysis below]
+[Image 2 — included in the joint visual analysis below]
 
-Visible text:
-<图片中的可见文字>
-
-Visual description:
-<与当前任务相关的视觉、布局和关系说明>
+[Images 1, 2 — Joint visual analysis]
+<逐图文字、视觉内容以及图片之间的关系>
 ```
 
 VLM 提示词明确把图片文字和 focus hint 都视为不可信数据，不执行图片中出现的指令。改写完成后插件会再次扫描请求，确保没有遗留 `input_image`。
@@ -157,6 +156,8 @@ plugins:
       # 通过 host.model.execute 复用宿主模型与凭证
       vision_model: gpt-5.6-luna
       language: zh
+      max_inflight_vision_requests: 4
+      emergency_max_images_per_request: 256
 ```
 
 插件不配置 endpoint 或 API key：CLIProxyAPI 根据 `vision_model` 完成模型路由、凭证选择、供应商协议转换和传输重试；嵌套调用会自动跳过本插件，避免递归。
@@ -214,7 +215,7 @@ curl -sS \
 | HTTP 状态 | 典型原因 |
 | ---: | --- |
 | `400` | Responses JSON 或支持范围内的输入结构无效 |
-| `413` | 请求体、图片数量、图片引用或 ABI 资源准入超过限制；错误文案会指出具体类别 |
+| `413` | 请求体、唯一图片应急上限、图片引用或 ABI 资源准入超过限制；错误文案会指出具体类别 |
 | `422` | 图片引用不受支持，例如只有 `file_id` |
 | `502` | VLM 失败、超时、返回无效结果，或最终改写校验失败 |
 
@@ -224,7 +225,8 @@ curl -sS \
 
 | 配置项 | 默认值 |
 | --- | ---: |
-| 单请求图片数 | 4 |
+| 全局在途视觉请求 | 4 |
+| 单请求唯一图片应急上限 | 256 |
 | 原始请求体 | 20 MiB |
 | 单图片引用 | 15 MiB |
 | VLM 响应体 | 4 MiB |
@@ -235,13 +237,13 @@ curl -sS \
 
 每次 `413` 都会通过宿主的 `host.log` 写入一条安全的 warning，并自动关联可用的 request ID。日志只包含 `limit_kind`、实际值、上限、当前 size 配置与配置 generation；不会写入图片、data URI、请求正文、headers 或凭据。
 
-需要复盘复杂多轮请求时，可临时设置 `trace_enabled: true`。插件会在 `logs/deepseek-vision-trace/` 写入事件索引和逐请求上下文包，明文保存原始多轮 body、图片 URL/data URI、发现位置与 focus hint、缓存计划、完整 VLM 请求/响应以及最终改写 body。凭据类 header/metadata 始终脱敏。该目录等同于完整用户数据副本，诊断后应立即关闭开关并安全删除文件。详见 [配置文档](docs/configuration.md#full-context-debug-trace)。
+需要复盘复杂多轮请求时，可临时设置 `trace_enabled: true`。插件会在 `logs/deepseek-vision-trace/` 写入事件索引和逐请求上下文包，明文保存原始多轮 body、图片 URL/data URI、prompt 分组与上下文、缓存计划、完整 VLM 请求/响应以及最终改写 body。凭据类 header/metadata 始终脱敏。该目录等同于完整用户数据副本，诊断后应立即关闭开关并安全删除文件。详见 [配置文档](docs/configuration.md#full-context-debug-trace)。
 
 ## 隐私、延迟与费用
 
 - VLM 会收到图片引用和一段有界的上下文提示；请确认供应商的数据保留、访问控制与数据驻留政策。
 - DeepSeek 收到的是 VLM 生成的视觉分析文本，不是原始图片。
-- 每个唯一的“图片 + 模型 + 语言 + 完整提示”产生一次宿主模型调用；单请求重复图片会合并，跨请求可命中 TTL 缓存。
+- 每个唯一的“有序图片组 + 模型 + 语言 + 完整 prompt”通常产生一次宿主模型调用；跨请求可命中 TTL 缓存。上游明确返回 413 时才会有序拆批。
 - data URI 默认缓存 15 分钟，URL 图片默认缓存 2 分钟，默认最多 128 项；三项均可配置，重配置或重启后清空。
 - 费用由 VLM 调用与追加给 DeepSeek 的文本 token 共同决定。
 - CLIProxyAPI 负责供应商 HTTP 传输、鉴权、协议转换与重试；生产环境仍应配置网络出口与 allowlist。

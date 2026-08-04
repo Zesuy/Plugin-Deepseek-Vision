@@ -7,9 +7,9 @@ CLIProxyAPI request
   -> host alias/model resolution
   -> request.intercept_after (plugin)
      -> gate SourceFormat/path/final Model
-     -> locate input_image blocks
-     -> one host.model.execute call per image
-     -> replace image with one input_text
+     -> group input_image blocks by prompt content/output item
+     -> one multi-image host.model.execute call per uncached prompt group
+     -> replace image positions with markers and append one joint analysis
   -> DeepSeek executor (only after all replacements succeed)
 ```
 
@@ -31,7 +31,9 @@ HTTP 客户端。`host.model.execute` 负责模型路由、凭证、供应商协
 
 ## 资源与安全边界
 
-- 每请求图片数、引用大小、请求体、VLM 响应体和输出字符数都有硬上限。
+- 全局在途视觉请求数使用有界队列；CLIProxyAPI 继续负责供应商级并发、限流和重试。
+- 唯一图片数仅保留默认 256 的异常负载兜底；引用大小、请求体、VLM 响应体和输出字符数仍有硬上限。
+- 多图请求只有在宿主明确返回 413 时才按顺序拆分，不依据供应商特定错误文本猜测。
 - 插件不接触、存储或转发 API key；凭证与供应商并发策略完全由 CLIProxyAPI 管理。
 - 插件只缓存派生分析文本和不可逆哈希键，不保存图片引用或原图；可配置容量与 TTL 的 LRU 随
   配置代际更新而清空，日志只记录脱敏后的错误类别。

@@ -10,6 +10,11 @@ import (
 
 const omittedImageReference = "[image reference omitted]"
 
+type groupedRewriteResult struct {
+	group PromptGroup
+	text  string
+}
+
 var (
 	// Generated VLM text is untrusted. These patterns remove source-like
 	// tokens even when they are not byte-for-byte equal to an input reference.
@@ -135,6 +140,125 @@ func (p *Plan) RewriteText(results []string) ([]byte, error) {
 		structured[i] = ParseVLMText(result)
 	}
 	return p.Rewrite(structured)
+}
+
+// RewriteGroupsText replaces every image with a lightweight numbered marker
+// and appends one joint visual analysis to the originating prompt item. This
+// preserves image order without duplicating a large model result per image.
+func (p *Plan) RewriteGroupsText(results []string) ([]byte, error) {
+	if p == nil {
+		return nil, plannerError(ErrorMalformedRequest, 400, "nil response plan", "body")
+	}
+	if len(p.groups) == 0 {
+		return append([]byte(nil), p.original...), nil
+	}
+	if len(results) != len(p.groups) {
+		return nil, plannerError(ErrorMissingResult, 502, "one VLM result is required for each prompt group", "input")
+	}
+	byLocation := make(map[locationKey]groupedRewriteResult, len(p.groups))
+	for i := range p.groups {
+		text := strings.TrimSpace(redactGroupText(results[i], p.images))
+		if text == "" {
+			return nil, plannerError(ErrorInvalidResult, 502, fmt.Sprintf("VLM group result %d is empty", i+1), "input")
+		}
+		if p.options.MaxResultChars > 0 && runeLen(text) > p.options.MaxResultChars {
+			return nil, limitExceeded(LimitVLMResult, runeLen(text), p.options.MaxResultChars, "VLM result exceeds configured limit", "input")
+		}
+		group := p.groups[i]
+		byLocation[locationKey{kind: group.locationKind, input: group.InputIndex, block: -1}] = groupedRewriteResult{group: group, text: text}
+	}
+
+	root, err := cloneJSON(p.root)
+	if err != nil {
+		return nil, plannerError(ErrorRewriteVerification, 500, "failed to clone request body", "body")
+	}
+	object, ok := root.(map[string]any)
+	if !ok {
+		return nil, malformed("Responses request must be a JSON object", "body")
+	}
+	replaced := 0
+	if items, ok := object["input"].([]any); ok {
+		for inputIndex, item := range items {
+			itemObject, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if content, ok := itemObject["content"].([]any); ok {
+				updated, count, rewriteErr := rewritePromptGroupBlocks(content, inputIndex, locationContent, byLocation)
+				if rewriteErr != nil {
+					return nil, rewriteErr
+				}
+				itemObject["content"] = updated
+				replaced += count
+			}
+			if itemType, _ := itemObject["type"].(string); itemType == "function_call_output" {
+				if output, ok := itemObject["output"].([]any); ok {
+					updated, count, rewriteErr := rewritePromptGroupBlocks(output, inputIndex, locationFunctionOutput, byLocation)
+					if rewriteErr != nil {
+						return nil, rewriteErr
+					}
+					itemObject["output"] = updated
+					replaced += count
+				}
+			}
+		}
+	}
+	if replaced != len(p.images) {
+		return nil, plannerError(ErrorRewriteVerification, 500, "not all discovered images were rewritten", "input")
+	}
+	body, err := json.Marshal(root)
+	if err != nil {
+		return nil, plannerError(ErrorRewriteVerification, 500, "rewritten request could not be encoded", "body")
+	}
+	check, err := Discover(body, p.options)
+	if err != nil || check.HasImages() {
+		return nil, plannerError(ErrorRewriteVerification, 500, "rewritten request still contains an input_image", "body")
+	}
+	return body, nil
+}
+
+func rewritePromptGroupBlocks(blocks []any, inputIndex int, kind locationKind, results map[locationKey]groupedRewriteResult) ([]any, int, error) {
+	key := locationKey{kind: kind, input: inputIndex, block: -1}
+	result, hasGroup := results[key]
+	if !hasGroup {
+		return blocks, 0, nil
+	}
+	imageIndex := 0
+	for blockIndex, block := range blocks {
+		blockObject, ok := block.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typeName, _ := blockObject["type"].(string); typeName != "input_image" {
+			continue
+		}
+		if imageIndex >= len(result.group.Images) {
+			return nil, 0, plannerError(ErrorRewriteVerification, 500, "prompt group image count changed before rewrite", locationPath(imageLocation{kind: kind, input: inputIndex, block: blockIndex}))
+		}
+		blocks[blockIndex] = map[string]any{"type": "input_text", "text": fmt.Sprintf("[Image %d — included in the joint visual analysis below]", imageIndex+1)}
+		imageIndex++
+	}
+	if imageIndex != len(result.group.Images) {
+		return nil, 0, plannerError(ErrorRewriteVerification, 500, "prompt group image locations changed before rewrite", "input")
+	}
+	blocks = append(blocks, map[string]any{
+		"type": "input_text",
+		"text": RenderGroupResult(result.group, result.text),
+	})
+	return blocks, imageIndex, nil
+}
+
+func RenderGroupResult(group PromptGroup, text string) string {
+	numbers := make([]string, len(group.Images))
+	for i := range group.Images {
+		numbers[i] = fmt.Sprintf("%d", i+1)
+	}
+	return fmt.Sprintf("[Images %s — Joint visual analysis]\n\n%s", strings.Join(numbers, ", "), strings.TrimSpace(text))
+}
+
+func redactGroupText(text string, images []Image) string {
+	result := ImageResult{VisualDescription: text}
+	return redactImageReferences(result, images).VisualDescription
 }
 
 // redactImageReferences prevents a model that echoes the source reference

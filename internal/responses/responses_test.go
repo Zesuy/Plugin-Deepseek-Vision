@@ -44,6 +44,49 @@ func TestDiscoverAndRewriteContentImage(t *testing.T) {
 	}
 }
 
+func TestPromptGroupBatchesImagesAndRewritesOnce(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"compare"},{"type":"input_image","image_url":"https://example.com/one.png"},{"type":"input_text","text":"focus on differences"},{"type":"input_image","image_url":"https://example.com/two.png"}]}]}`)
+	plan, err := Discover(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := plan.Groups()
+	if len(groups) != 1 || len(groups[0].Images) != 2 || groups[0].Prompt != "compare\n\nfocus on differences" {
+		t.Fatalf("groups = %#v", groups)
+	}
+	rewritten, err := plan.RewriteGroupsText([]string{"Image 1 is a form. Image 2 is the completed form. The second follows the first."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rewritten)
+	if strings.Contains(text, "input_image") || strings.Contains(text, "example.com/") {
+		t.Fatalf("group rewrite retained an image: %s", text)
+	}
+	if strings.Count(text, "Joint visual analysis") != 1 || !strings.Contains(text, "[Image 1 — included") || !strings.Contains(text, "[Image 2 — included") {
+		t.Fatalf("group analysis was not inserted exactly once: %s", text)
+	}
+}
+
+func TestFunctionOutputImagesFormTheirOwnPromptGroup(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"inspect tool screenshots"}]},{"type":"function_call_output","output":[{"type":"output_text","text":"tool result"},{"type":"input_image","image_url":"https://example.com/tool-1.png"},{"type":"input_image","image_url":"https://example.com/tool-2.png"}]}]}`)
+	plan, err := Discover(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := plan.Groups()
+	if len(groups) != 1 || groups[0].Source != "function_call_output" || len(groups[0].Images) != 2 || groups[0].Prompt != "inspect tool screenshots" {
+		t.Fatalf("groups = %#v", groups)
+	}
+	rewritten, err := plan.RewriteGroupsText([]string{"Image 1 shows the start. Image 2 shows the result."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rewritten)
+	if strings.Contains(text, "input_image") || strings.Count(text, "Joint visual analysis") != 1 || !strings.Contains(text, "tool result") {
+		t.Fatalf("function output group rewrite = %s", text)
+	}
+}
+
 func TestDiscoverFixtures(t *testing.T) {
 	fixtures := []struct {
 		name   string
@@ -220,9 +263,9 @@ func TestImageCountErrorBreaksDownMultiTurnAndDuplicates(t *testing.T) {
 		`{"role":"user","content":[{"type":"input_image","image_url":"https://e/repeated"},{"type":"input_image","image_url":"https://e/history"}]},` +
 		`{"role":"user","content":[{"type":"input_image","image_url":"https://e/repeated"},{"type":"input_image","image_url":"https://e/current-a"},{"type":"input_image","image_url":"https://e/current-b"}]}` +
 		`]}`)
-	_, err := Discover(body, Options{MaxImages: 4})
+	_, err := Discover(body, Options{MaxImages: 3})
 	var plannerErr *Error
-	if !errors.As(err, &plannerErr) || plannerErr.ImageCount == nil {
+	if !errors.As(err, &plannerErr) || plannerErr.ImageCount == nil || plannerErr.Actual != 4 {
 		t.Fatalf("error = %#v", err)
 	}
 	details := plannerErr.ImageCount

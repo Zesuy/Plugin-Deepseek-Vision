@@ -103,15 +103,17 @@ release assets.
   analysis succeeds. A `previous_response_id` is only an identifier:
   server-side history hidden behind it is not included in this callback and
   cannot be fetched or rewritten by the plugin.
-- Each `input_image` is replaced in place with one `input_text` block
-  containing visible text and a visual description. OCR and visual explanation
-  are intentionally VLM-first and returned in one call.
-- Identical image/model/language/full-prompt work is deduplicated within one
-  request and reused across requests through a configurable TTL cache. Defaults
+- All images in one content/function-output prompt item are sent to Luna in one
+  ordered multi-image host call. Their positions become numbered text markers,
+  and one joint analysis is appended to that prompt item.
+- Identical ordered image-group/model/language/full-prompt work is deduplicated
+  within one request and reused across requests through a configurable TTL cache. Defaults
   are 128 entries, 15 minutes for data URIs, and 2 minutes for URLs;
   reconfigure starts a fresh cache.
-- Requests are bounded by image count, body/reference/response sizes, and a
-  total preprocessing deadline.
+- Host vision calls use a configurable global in-flight bound; excess prompt
+  groups queue. A high emergency unique-image ceiling and body/reference/response
+  sizes remain bounded together with the total preprocessing deadline. Explicit
+  upstream 413 responses split multi-image groups in order.
 - Invalid or incomplete configuration edits never unregister the plugin. The
   last known-good runtime remains active; if there is no valid runtime yet,
   targeted image requests fail closed while the configuration UI stays
@@ -127,7 +129,7 @@ release assets.
   maximum values, active size settings, and configuration generation.
 - For difficult multi-turn diagnosis, `trace_enabled: true` writes a plaintext
   event index and per-request bundle under `logs/deepseek-vision-trace/`. It
-  includes the exact inbound body, image URLs/data URIs, focus hints, cache
+  includes the exact inbound body, image URLs/data URIs, prompt groups/context, cache
   plan, VLM requests/responses, and rewritten body. Credential headers and
   metadata are still redacted. Treat this directory as a full copy of user
   data and enable it only temporarily.
