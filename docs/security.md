@@ -31,6 +31,9 @@ Text visible in an image is untrusted data. The prompt explicitly asks the VLM
 not to follow instructions found inside the image. If any image analysis fails,
 the complete request is terminated before the DeepSeek executor receives it;
 partial rewrites and accidental original-image forwarding are not allowed.
+For successfully consumed Codex attachments, matching local temporary paths are
+removed and a fixed plugin-authored notice tells the non-vision target model to
+use the supplied analysis rather than invoke image/file tools on those paths.
 
 `max_inflight_vision_requests` bounds callback fan-out without rejecting normal
 multi-image prompts. `emergency_max_images_per_request` is a high, last-resort

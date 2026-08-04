@@ -91,6 +91,10 @@ content and cross-image relationships. Image text is declared untrusted and
 must never be followed as an instruction. The configured language applies to
 the explanation while transcription preserves original characters. Up to
 2,000 runes of text from the same prompt item are included as bounded context.
+The rewritten prompt explicitly tells the non-vision target model that these
+attachments have already been analyzed and must not be reopened with
+`view_image`; exact Codex temporary paths tied to the consumed image wrappers
+are removed while the user's request text is preserved.
 
 `max_images_per_request` from older builds remains decodable but is ignored. It
 cannot silently restore the former four-block rejection behavior.

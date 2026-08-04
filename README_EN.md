@@ -105,7 +105,10 @@ release assets.
   cannot be fetched or rewritten by the plugin.
 - All images in one content/function-output prompt item are sent to Luna in one
   ordered multi-image host call. Their positions become numbered text markers,
-  and one joint analysis is appended to that prompt item.
+  and one joint analysis is appended to that prompt item. A fixed notice tells
+  the non-vision target model to use that analysis instead of reopening the
+  consumed attachments with `view_image`; matching Codex temporary paths are
+  removed from the rewritten prompt.
 - Identical ordered image-group/model/language/full-prompt work is deduplicated
   within one request and reused across requests through a configurable TTL cache. Defaults
   are 128 entries, 15 minutes for data URIs, and 2 minutes for URLs;

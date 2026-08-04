@@ -130,15 +130,17 @@ VLM 响应必须可抽取为非空文本，并受 `max_response_bytes` 和 `max_
 并在该项末尾追加一次联合分析，模板为：
 
 ```text
-[Image N — included in the joint visual analysis below]
+[Image N — already analyzed; the target model cannot read this attachment directly]
 
+[Vision preprocessing notice: the target model cannot inspect image attachments directly and must not reopen these analyzed attachments with image/file tools]
 [Images N, ... — Joint visual analysis]
 <ordered transcription, description, and cross-image relationships>
 ```
 
 `N` 按原始遍历顺序从 1 开始。所有其他字段、非图片块和原有顺序保持不变；被替换的
 图片块以及生成的分析文本不得保留对应的原始 `input_image`、URL 或 data URI。改写
-必须幂等（重复处理已替换文本不会再次调用 VLM）。
+还必须移除与已分析附件对应的 Codex 本地临时路径，并明确通知下游目标模型直接使用
+联合分析、不要再次调用 `view_image`。必须幂等（重复处理已替换文本不会再次调用 VLM）。
 
 ## 6. 失败、安全与上游调用顺序
 

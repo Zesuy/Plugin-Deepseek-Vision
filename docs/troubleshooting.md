@@ -118,6 +118,12 @@ from `host.log` for `limit_kind`, `actual`, `maximum`, active size settings and
 in-flight usage. This ordinary host-log warning never contains image data or
 credentials. Provider retry behavior is controlled by CLIProxyAPI.
 
+If the target model nevertheless calls `view_image`, verify that the rewritten
+prompt contains the fixed vision-preprocessing notice and no local attachment
+path. A successful rich `view_image` tool result is an array and will be
+converted again; a string result (including a tool error) is preserved as a
+normal Responses function output and must not be rejected by the plugin.
+
 For a multi-turn request whose ordinary 413 warning is insufficient, enable:
 
 ```yaml

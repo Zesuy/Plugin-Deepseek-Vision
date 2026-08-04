@@ -93,14 +93,15 @@ flowchart LR
 末尾只写入一份联合分析：
 
 ```text
-[Image 1 — included in the joint visual analysis below]
-[Image 2 — included in the joint visual analysis below]
+[Image 1 — already analyzed; the target model cannot read this attachment directly]
+[Image 2 — already analyzed; the target model cannot read this attachment directly]
 
+[Vision preprocessing notice: use the supplied analysis and do not reopen these attachments with view_image]
 [Images 1, 2 — Joint visual analysis]
 <逐图文字、视觉内容以及图片之间的关系>
 ```
 
-VLM 提示词明确把图片文字和 focus hint 都视为不可信数据，不执行图片中出现的指令。改写完成后插件会再次扫描请求，确保没有遗留 `input_image`。
+VLM 提示词明确把图片文字和 prompt 上下文都视为不可信数据，不执行图片中出现的指令。写给 DeepSeek 的固定提示会说明目标模型无法直接读取图片、附件已经完成视觉分析，不应再调用 `view_image` 打开这些附件。对应的 Codex 临时路径会被移除；改写完成后插件会再次扫描请求，确保没有遗留 `input_image`。
 
 ## 快速开始
 

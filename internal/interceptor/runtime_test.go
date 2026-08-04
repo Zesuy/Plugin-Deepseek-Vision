@@ -504,6 +504,24 @@ func TestHandleRewritesVisibleHistoryAndCurrentImages(t *testing.T) {
 	}
 }
 
+func TestHandlePreservesStringToolOutputWhileRewritingImages(t *testing.T) {
+	analyzer := &testAnalyzer{}
+	r := newTestRuntime(t, analyzer)
+	defer r.Shutdown()
+	body := `{"input":[` +
+		`{"role":"user","content":[{"type":"input_text","text":"describe the attachment"},{"type":"input_image","image_url":"https://example.com/current.png"}]},` +
+		`{"type":"function_call_output","call_id":"call_view","output":"unable to locate image"}` +
+		`]}`
+	resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body))
+	if err != nil || resp.Terminate {
+		t.Fatalf("response=%#v err=%v", resp, err)
+	}
+	rewritten := string(resp.Body)
+	if strings.Contains(rewritten, "input_image") || !strings.Contains(rewritten, "unable to locate image") || !strings.Contains(rewritten, "target model cannot inspect image attachments directly") {
+		t.Fatalf("string tool output/image rewrite = %s", rewritten)
+	}
+}
+
 func TestHandleDeduplicatesWithinRequestAndCachesAcrossRequests(t *testing.T) {
 	analyzer := &batchTestAnalyzer{}
 	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil })

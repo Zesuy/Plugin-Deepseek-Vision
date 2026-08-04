@@ -14,6 +14,9 @@
 - Only URL and data-URI `input_image` references in the supported Responses
   input/content and function-call-output locations are processed. Unsupported
   image references fail closed rather than being forwarded.
+- Plain string `function_call_output.output` values are valid non-image tool
+  results and pass through unchanged. Array outputs are scanned for rich
+  `input_image` content and converted as prompt groups.
 - The walker scans all visible `input[]` turns in one request, so images from
   retained historical turns and the current turn are converted together. A
   `previous_response_id` does not expose server-side history to the callback;

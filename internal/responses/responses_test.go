@@ -62,8 +62,39 @@ func TestPromptGroupBatchesImagesAndRewritesOnce(t *testing.T) {
 	if strings.Contains(text, "input_image") || strings.Contains(text, "example.com/") {
 		t.Fatalf("group rewrite retained an image: %s", text)
 	}
-	if strings.Count(text, "Joint visual analysis") != 1 || !strings.Contains(text, "[Image 1 — included") || !strings.Contains(text, "[Image 2 — included") {
+	if strings.Count(text, "Joint visual analysis") != 1 || !strings.Contains(text, "[Image 1 — already analyzed") || !strings.Contains(text, "[Image 2 — already analyzed") || !strings.Contains(text, "target model cannot inspect image attachments directly") {
 		t.Fatalf("group analysis was not inserted exactly once: %s", text)
+	}
+}
+
+func TestGroupedRewriteRemovesCodexAttachmentPathsAndDiscouragesReopen(t *testing.T) {
+	body := []byte(`{"input":[{"role":"user","content":[` +
+		`{"type":"input_text","text":"# Files mentioned by the user:\n\n## shot.png: C:/Users/demo/AppData/Local/Temp/shot.png\n## My request:\nDescribe it"},` +
+		`{"type":"input_text","text":"<image name=[Image #1] path=\"C:\\Users\\demo\\AppData\\Local\\Temp\\shot.png\">"},` +
+		`{"type":"input_image","image_url":"data:image/png;base64,AAAA"},` +
+		`{"type":"input_text","text":"</image>"}` +
+		`]},` +
+		`{"role":"assistant","content":[{"type":"output_text","text":"Historical note: C:/Users/demo/AppData/Local/Temp/shot.png"}]},` +
+		`{"type":"function_call","name":"view_image","arguments":"{\"path\":\"C:\\\\Users\\\\demo\\\\AppData\\\\Local\\\\Temp\\\\shot.png\"}"}` +
+		`]}`)
+	plan, err := Discover(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := plan.RewriteGroupsText([]string{"A settings dialog."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(rewritten)
+	for _, forbidden := range []string{"C:/Users/", `C:\\Users\\`, `path=\"`, "input_image"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("rewritten attachment retained %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{"Describe it", "Historical note", "analyzed image attachment path omitted", "target model cannot inspect image attachments directly", "do not call view_image"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("rewritten attachment missing %q: %s", required, text)
+		}
 	}
 }
 
@@ -180,6 +211,21 @@ func TestTopLevelStringAndNoInputPassthrough(t *testing.T) {
 		if err != nil || string(out) != body {
 			t.Fatalf("passthrough = %q, err=%v", out, err)
 		}
+	}
+}
+
+func TestStringFunctionCallOutputIsValidAndPreserved(t *testing.T) {
+	body := `{"input":[{"type":"function_call_output","call_id":"call_1","output":"unable to locate image"}]}`
+	plan, err := Discover([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.HasImages() {
+		t.Fatal("string tool output unexpectedly produced an image")
+	}
+	out, err := plan.RewriteGroupsText(nil)
+	if err != nil || string(out) != body {
+		t.Fatalf("string tool output changed: %s, err=%v", out, err)
 	}
 }
 

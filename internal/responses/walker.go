@@ -212,9 +212,16 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 
 		if itemType == "function_call_output" {
 			if rawOutput, exists := itemObject["output"]; exists {
+				// A string is the ordinary Responses function result shape and
+				// cannot contain image blocks. Rich tool outputs may instead use an
+				// array of input content blocks, which is where view_image results
+				// are discovered and converted.
+				if _, ok := rawOutput.(string); ok {
+					continue
+				}
 				output, ok := rawOutput.([]any)
 				if !ok {
-					return nil, malformed("function_call_output.output must be an array", fmt.Sprintf("input[%d].output", inputIndex))
+					return nil, malformed("function_call_output.output must be a string or array", fmt.Sprintf("input[%d].output", inputIndex))
 				}
 				for blockIndex, block := range output {
 					globalPos++
