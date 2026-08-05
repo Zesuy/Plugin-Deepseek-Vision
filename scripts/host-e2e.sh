@@ -76,8 +76,8 @@ done
 
 echo "building plugin and CLIProxyAPI host"
 CGO_ENABLED=1 GOTOOLCHAIN=auto go build -buildmode=c-shared -trimpath \
-  -ldflags='-s -w -X main.pluginVersion=0.1.0-host-e2e' \
-  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.1.0.so" "$ROOT"
+  -ldflags='-s -w -X main.pluginVersion=0.1.1-host-e2e' \
+  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.1.1.so" "$ROOT"
 (cd "$CLI_ROOT" && CGO_ENABLED=1 GOTOOLCHAIN=auto go build -trimpath -o "$TMP/cliproxy" ./cmd/server)
 
 CONFIG="$TMP/config.yaml"
@@ -105,7 +105,7 @@ plugins:
       priority: 100
       store:
         source: "host-e2e"
-        version: "0.1.0"
+        version: "0.1.1"
       target_models: [deepseek-v4-flash]
       vision_model: "gpt-5.6-luna"
       language: "en"
@@ -209,7 +209,7 @@ python3 - "$TMP/plugin-config.json" <<'PY'
 import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
 assert payload.get("store", {}).get("source") == "host-e2e", payload
-assert payload.get("store", {}).get("version") == "0.1.0", payload
+assert payload.get("store", {}).get("version") == "0.1.1", payload
 assert payload.get("analysis_cache_size") == 16, payload
 assert payload.get("analysis_cache_ttl_seconds") == 60, payload
 assert payload.get("analysis_url_cache_ttl_seconds") == 30, payload

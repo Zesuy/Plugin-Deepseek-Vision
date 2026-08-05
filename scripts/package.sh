@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build and package the Linux/amd64 c-shared plugin. The VLM key is a runtime
-# environment variable; this script never reads or writes credentials.
+# Build and package the Linux/amd64 c-shared plugin. Vision-model routing and
+# credentials are host-owned; this script never reads or writes credentials.
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${VERSION:-0.1.0}"
+version="${VERSION:-0.1.1}"
 dist_dir="${DIST_DIR:-${repo_dir}/dist}"
 go_bin="${GO:-go}"
 

@@ -1,10 +1,10 @@
 # 插件契约
 
-本文件冻结 `deepseek-vision` v0.1.0 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
+本文件冻结 `deepseek-vision` v0.1.1 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
 
 本版本的真实网关和发布验收只使用 `deepseek-v4-flash`。契约和配置保留
 `deepseek-v4-pro` 作为未来支持目标，但其 Responses 服务当前不可用，因此
-不要求、不探测，也不把 pro 真实调用作为 v0.1.0 的完成条件。
+不要求、不探测，也不把 pro 真实调用作为 v0.1.1 的完成条件。
 
 ## 1. ABI 与 RPC
 
@@ -77,16 +77,17 @@ alias 解析完全由 CLIProxyAPI 宿主负责；插件不重写 alias，也不�
 一起转换。Anthropic Messages 和 Chat Completions 不在本版本支持范围内：非
 `openai-response` 的请求不进入本插件图片改写链路，也不承诺为这些协议移除图片。
 
-## 4. 单 VLM 处理协议
+## 4. prompt 组 VLM 处理协议
 
-每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。插件通过
-CLIProxyAPI 的 `host.model.execute` 执行 OpenAI Responses 请求，默认模型为
+同一个 content/output prompt 项中的全部图片按顺序合并为一次 VLM 调用，不再按图拆分
+OCR 或维护独立视觉服务。插件通过 CLIProxyAPI 的 `host.model.execute` 执行 OpenAI
+Responses 请求，默认模型为
 `gpt-5.6-luna`。模型路由、凭证、供应商协议转换、传输和重试由宿主管理；插件不读取
 额外 key，宿主跳过当前插件以阻止嵌套调用递归。插件不提供 external HTTP 后端。
 
-同一个 content/output prompt 项中的图片必须按顺序合并为一次宿主调用；相同有序
-图片组、模型、规范化语言和完整 prompt 的工作必须去重。成功的派生文本可进入有界代际缓存；缓存键不得保留原图片引用，失败结果
-不得缓存。data URI 使用较长 TTL，可能变化的 URL 使用较短 TTL；重配置必须换新缓存。
+相同有序图片组、模型、规范化语言和完整 prompt 的工作必须去重。成功的派生文本可进入
+有界代际缓存；缓存键不得保留原图片引用，失败结果不得缓存。data URI 使用较长 TTL，
+可能变化的 URL 使用较短 TTL；重配置必须换新缓存。
 
 请求核心形状：
 

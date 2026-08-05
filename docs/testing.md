@@ -21,7 +21,7 @@ services:
 ```bash
 docker compose -f docker/docker-compose.example.yml config
 docker build --file Dockerfile.plugin --target artifact \
-  --build-arg VERSION=0.1.0 \
+  --build-arg VERSION=0.1.1 \
   --output type=local,dest=/tmp/deepseek-vision-plugin .
 ```
 

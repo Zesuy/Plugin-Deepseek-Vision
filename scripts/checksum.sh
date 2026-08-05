@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 dist_dir="${DIST_DIR:-${repo_dir}/dist}"
-version="${VERSION:-0.1.0}"
+version="${VERSION:-0.1.1}"
 archive="${dist_dir}/deepseek-vision_${version}_linux_amd64.zip"
 checksums="${dist_dir}/checksums.txt"
 
